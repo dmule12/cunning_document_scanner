@@ -1,0 +1,985 @@
+<title>Cin7 Reorder Automation</title>
+
+<style>
+  /* ============================================================
+     Design plan — "goods-received note"
+     Color : pale cool paper, petrol ink, petrol-teal accent,
+             semantic moss / ochre / oxide for status marks
+     Type  : monospace as the DISPLAY face (uppercase, tracked) —
+             the vernacular of printed packing slips;
+             serif body for long-form reading; mono tabular data
+     Layout: single measure with a persistent left margin-gutter
+             carrying section numbers and status marks, as on a
+             pre-printed warehouse form
+     ============================================================ */
+
+  :root {
+    --ground:      #EDF1F1;
+    --surface:     #F7FAFA;
+    --surface-alt: #E3EAEA;
+    --ink:         #16232A;
+    --ink-soft:    #4E626B;
+    --ink-faint:   #7B8C93;
+    --rule:        #CFDADA;
+    --rule-strong: #A9BABA;
+    --accent:      #0B5D63;
+    --accent-soft: #DCEBEB;
+    --ok:          #2F6B43;
+    --ok-soft:     #DEEBE1;
+    --warn:        #96590F;
+    --warn-soft:   #F3E7D4;
+    --stop:        #94382D;
+    --stop-soft:   #F3E0DC;
+
+    --measure: 68ch;
+    --gutter: 5.5rem;
+
+    --f-display: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --f-body: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif Pro", Georgia, serif;
+    --f-data: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #101819;
+      --surface:     #172123;
+      --surface-alt: #1E2A2C;
+      --ink:         #DDE7E6;
+      --ink-soft:    #9BB0B1;
+      --ink-faint:   #6F8688;
+      --rule:        #2A393B;
+      --rule-strong: #3C4E50;
+      --accent:      #58B6AF;
+      --accent-soft: #17302F;
+      --ok:          #79B98C;
+      --ok-soft:     #172C1E;
+      --warn:        #D9A45C;
+      --warn-soft:   #2E2415;
+      --stop:        #D98878;
+      --stop-soft:   #2E1B17;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #101819;
+    --surface:     #172123;
+    --surface-alt: #1E2A2C;
+    --ink:         #DDE7E6;
+    --ink-soft:    #9BB0B1;
+    --ink-faint:   #6F8688;
+    --rule:        #2A393B;
+    --rule-strong: #3C4E50;
+    --accent:      #58B6AF;
+    --accent-soft: #17302F;
+    --ok:          #79B98C;
+    --ok-soft:     #172C1E;
+    --warn:        #D9A45C;
+    --warn-soft:   #2E2415;
+    --stop:        #D98878;
+    --stop-soft:   #2E1B17;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: calc(var(--measure) + var(--gutter) + 4rem);
+    margin: 0 auto;
+    padding: 0 2rem 6rem;
+  }
+
+  /* ---- margin-gutter grid: the pre-printed form column ---- */
+  .row {
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    gap: 0 2rem;
+    align-items: start;
+  }
+  .row > .mark {
+    font-family: var(--f-display);
+    font-size: 0.68rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-top: 0.55rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .row > .body { min-width: 0; }
+
+  @media (max-width: 720px) {
+    .row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .row > .mark { text-align: left; padding-top: 0; padding-bottom: 0.4rem; }
+    .sheet { padding: 0 1.15rem 4rem; }
+  }
+
+  /* ---------------- masthead ---------------- */
+  header.masthead {
+    padding: 4.5rem 0 2.25rem;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 0;
+  }
+  .docket {
+    font-family: var(--f-display);
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    margin-bottom: 2rem;
+  }
+  .docket span { white-space: nowrap; }
+  .docket .sep { color: var(--rule-strong); }
+
+  h1 {
+    font-family: var(--f-display);
+    font-size: clamp(1.6rem, 4.4vw, 2.5rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
+    margin: 0 0 1.5rem;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 1.14rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------------- the answer, up front ---------------- */
+  .answer {
+    margin: 0 0 3.5rem;
+    padding: 1.75rem 0 2rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  .answer .verdict-line {
+    font-family: var(--f-display);
+    font-size: clamp(1.05rem, 2.8vw, 1.35rem);
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--accent);
+    margin: 0 0 1rem;
+    text-wrap: balance;
+  }
+  .answer p { margin: 0 0 0.9rem; max-width: var(--measure); }
+  .answer p:last-child { margin-bottom: 0; }
+
+  /* ---------------- sections ---------------- */
+  section { padding: 2.75rem 0 0; }
+
+  h2 {
+    font-family: var(--f-display);
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin: 0 0 1.25rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--rule-strong);
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: var(--f-display);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 2rem 0 0.75rem;
+  }
+
+  p { margin: 0 0 1.05rem; max-width: var(--measure); }
+  section p:last-child { margin-bottom: 0; }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; color: var(--ink-soft); }
+
+  a {
+    color: var(--accent);
+    text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    text-underline-offset: 0.16em;
+  }
+  a:hover { text-decoration-color: var(--accent); }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 1px;
+  }
+
+  ul, ol { max-width: var(--measure); margin: 0 0 1.05rem; padding-left: 1.3rem; }
+  li { margin-bottom: 0.5rem; }
+  li::marker { color: var(--ink-faint); }
+
+  code {
+    font-family: var(--f-data);
+    font-size: 0.855em;
+    background: var(--surface-alt);
+    padding: 0.12em 0.36em;
+    border-radius: 2px;
+    color: var(--ink);
+  }
+
+  pre {
+    font-family: var(--f-data);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.15rem;
+    overflow-x: auto;
+    margin: 0 0 1.25rem;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+
+  /* ---------------- status marks ---------------- */
+  .tag {
+    display: inline-block;
+    font-family: var(--f-display);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.15em 0.45em;
+    border-radius: 2px;
+    vertical-align: 0.08em;
+    white-space: nowrap;
+  }
+  .tag-v { background: var(--ok-soft);   color: var(--ok);   border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); }
+  .tag-c { background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent); }
+
+  /* ---------------- tables ---------------- */
+  .table-wrap { overflow-x: auto; margin: 0 0 1.5rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.93rem;
+    min-width: 30rem;
+  }
+  caption {
+    font-family: var(--f-display);
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    text-align: left;
+    padding-bottom: 0.6rem;
+  }
+  th {
+    font-family: var(--f-display);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    text-align: left;
+    padding: 0 0.9rem 0.55rem 0;
+    border-bottom: 1px solid var(--rule-strong);
+    vertical-align: bottom;
+  }
+  td {
+    padding: 0.7rem 0.9rem 0.7rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+  tr > *:last-child { padding-right: 0; }
+  td.num, th.num {
+    font-family: var(--f-data);
+    color: var(--ink-faint);
+    width: 2.5rem;
+    padding-right: 0.6rem;
+  }
+  td.call { font-family: var(--f-data); font-size: 0.85rem; white-space: nowrap; }
+
+  .yes { color: var(--ok);   font-weight: 600; }
+  .no  { color: var(--stop); font-weight: 600; }
+
+  tr.is-gating td { background: var(--warn-soft); }
+  tr.is-gating td:first-child { box-shadow: inset 3px 0 0 var(--warn); padding-left: 0.7rem; }
+
+  /* ---------------- callouts ---------------- */
+  .note {
+    border: 1px solid var(--rule-strong);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 1.1rem 1.25rem;
+    margin: 0 0 1.5rem;
+    max-width: var(--measure);
+  }
+  .note > :last-child { margin-bottom: 0; }
+  .note .note-label {
+    display: block;
+    font-family: var(--f-display);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  .note.is-gating { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note.is-gating .note-label { color: var(--warn); }
+  .note.is-trap { border-left-color: var(--stop); background: var(--stop-soft); }
+  .note.is-trap .note-label { color: var(--stop); }
+
+  /* ---------------- option stack ---------------- */
+  .options { display: flex; flex-direction: column; gap: 1rem; margin: 0 0 1.5rem; max-width: var(--measure); }
+  .option {
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    padding: 1.1rem 1.25rem;
+  }
+  .option > :last-child { margin-bottom: 0; }
+  .option h4 {
+    font-family: var(--f-display);
+    font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 0 0 0.6rem;
+    color: var(--ink);
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+  .option h4 .key { color: var(--accent); }
+  .option.is-pick { border-color: var(--accent); border-left: 3px solid var(--accent); }
+  .option.is-last { opacity: 0.82; }
+
+  /* ---------------- ladder ---------------- */
+  ol.ladder { list-style: none; padding: 0; margin: 0 0 1.5rem; max-width: var(--measure); counter-reset: rung; }
+  ol.ladder li {
+    counter-increment: rung;
+    display: grid;
+    grid-template-columns: 2.1rem minmax(0, 1fr);
+    gap: 0.9rem;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--rule);
+    margin: 0;
+  }
+  ol.ladder li::before {
+    content: counter(rung);
+    font-family: var(--f-display);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    text-align: center;
+    padding: 0.2rem 0;
+    height: fit-content;
+    border-radius: 2px;
+  }
+
+  /* ---------------- sources ---------------- */
+  .sources { columns: 2; column-gap: 2.5rem; font-size: 0.9rem; }
+  .sources li { break-inside: avoid; margin-bottom: 0.6rem; }
+  @media (max-width: 720px) { .sources { columns: 1; } }
+
+  footer.colophon {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid var(--ink);
+    font-family: var(--f-display);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+  }
+</style>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <div class="docket">
+      <span>Cin7 Core</span>
+      <span class="sep">/</span>
+      <span>Purchasing</span>
+      <span class="sep">/</span>
+      <span>Feasibility</span>
+      <span class="sep">/</span>
+      <span>16 Aug 2026</span>
+    </div>
+    <h1>Twice-weekly purchase orders from par&nbsp;levels</h1>
+    <p class="standfirst">
+      Can a scheduled job read stock against par and reorder levels and raise purchase orders in
+      Cin7 Core — and is there an API limitation that stops POs being fired off?
+      <strong>No such limitation exists.</strong> The real obstacle is elsewhere, and it is the
+      more interesting problem.
+    </p>
+  </header>
+
+  <div class="row">
+    <div class="mark">Answer</div>
+    <div class="body">
+      <div class="answer">
+        <p class="verdict-line">The API creates purchase orders perfectly well. It just won't email
+          them, and it won't speak in boxes.</p>
+        <p>
+          Two things Cin7 genuinely will not do: <strong>email a PO to a supplier from the API</strong>,
+          and <strong>express a reorder suggestion in the unit your supplier actually sells in</strong>.
+        </p>
+        <p>
+          The first is neutralised by design — the job stops at DRAFT and a person clicks send.
+          The second is the entire reason this automation is worth building.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">Marks</div>
+    <div class="body">
+      <section id="confidence" style="padding-top:0">
+        <h2>How to read the confidence marks</h2>
+        <p>
+          Cin7's documentation sites are blocked by the network egress proxy in the environment where
+          this was researched. Everything below is sourced from search-result excerpts of those same
+          docs plus the public Apiary reference. Claims are marked accordingly:
+        </p>
+        <ul>
+          <li><span class="tag tag-v">V</span> &nbsp;<strong>Verified</strong> — stated explicitly in Cin7 documentation.</li>
+          <li><span class="tag tag-c">C</span> &nbsp;<strong>To confirm</strong> — inferred from the feature model or
+            permission structure. Check against a live account before writing code.</li>
+        </ul>
+        <p>
+          Two <span class="tag tag-c">C</span> items are <strong>gating</strong>: they decide the shape
+          of the build. Resolve them before anyone writes a line of code.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">01</div>
+    <div class="body">
+      <section id="verdict">
+        <h2>Verdict</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>Capability against the Cin7 Core API</caption>
+            <thead>
+              <tr><th>Capability</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Create a PO via API</td><td><span class="yes">Yes</span> — <code>POST /purchase</code> <span class="tag tag-v">V</span></td></tr>
+              <tr><td>Create it as a DRAFT</td><td><span class="yes">Yes</span> — POs land in DRAFT, authorised separately <span class="tag tag-v">V</span></td></tr>
+              <tr><td>Authorise via API</td><td><span class="yes">Yes</span> — a <code>PURCHASE_ORDER_AUTHORISED</code> webhook exists <span class="tag tag-v">V</span></td></tr>
+              <tr><td>Read stock, suppliers, locations, BOMs</td><td><span class="yes">Yes</span> — all exposed <span class="tag tag-v">V</span></td></tr>
+              <tr><td><strong>Email the PO to the supplier via API</strong></td><td><span class="no">No</span> — no documented endpoint <span class="tag tag-c">C</span></td></tr>
+              <tr><td><strong>Round a reorder need up to whole cases</strong></td><td><span class="no">No</span> — not a Cin7 behaviour <span class="tag tag-v">V</span></td></tr>
+              <tr><td><strong>Pick box vs base unit per product</strong></td><td><span class="no">No</span> — not a Cin7 behaviour <span class="tag tag-v">V</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          The last three are the honest limitations, and only one of them is a real obstacle — not
+          the one that prompted the question.
+        </p>
+        <p>
+          <strong>On emailing:</strong> in Cin7 Core you send a PO by opening it and clicking
+          <strong>Email → Purchase Order</strong>, which attaches the PDF automatically
+          <span class="tag tag-v">V</span>. There is no API equivalent. Working around it would mean
+          generating your own PO document and sending from your own mail system — abandoning Cin7's
+          templates, numbering and audit trail. <strong>We are not doing that.</strong> Stopping at
+          DRAFT turns this limitation into a non-issue.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">02</div>
+    <div class="body">
+      <section id="units">
+        <h2>The units problem</h2>
+        <p>
+          Cin7 tracks inventory in <strong>base units</strong> — sleeves. Reorder alerts are computed
+          and reported in sleeves. But suppliers sell by the <strong>box</strong>. An alert saying
+          <em>"you need 37 sleeves"</em> is not an order anyone can place.
+        </p>
+
+        <h3>What Cin7 already gives you</h3>
+        <p>
+          <strong>Additional Units of Measure (AUOM)</strong> exists for exactly this shape of problem
+          <span class="tag tag-v">V</span>:
+        </p>
+        <ul>
+          <li>The base unit stays the sleeve.</li>
+          <li>You add an additional UOM — "Box" — with a conversion ratio in the
+            <strong>"Number of…"</strong> field, integer or decimal <span class="tag tag-v">V</span>.</li>
+          <li><strong>Auto-disassembly fires when goods are received</strong> (the Receive tab in
+            Purchase). Receiving 2 boxes automatically stocks 48 sleeves <span class="tag tag-v">V</span>.</li>
+          <li>The mirror image exists too: auto-assembly triggers when a sales order is authorised, if
+            you sell in cases but stock in singles <span class="tag tag-v">V</span>.</li>
+        </ul>
+        <p>
+          Editing AUOMs requires both the <strong>Inventory – Products &amp; Families</strong> and
+          <strong>Product – Bill of Materials</strong> permissions <span class="tag tag-v">V</span> —
+          a strong hint about how it is implemented internally, which §03 leans on.
+        </p>
+
+        <h3>What AUOM does not fix</h3>
+        <div class="note is-trap">
+          <span class="note-label">The gap</span>
+          <p>
+            AUOM changes the purchase document and the receipt conversion. <strong>It does not change
+            the reorder suggestion.</strong> Low-stock reorder still computes in base units. Nothing in
+            Cin7 turns <em>"need 37 sleeves"</em> into <em>"order 2 boxes."</em>
+          </p>
+        </div>
+        <p>
+          That rounding step — trivial arithmetic, but nobody's job to do two hundred times — is the
+          first half of what the script is for.
+        </p>
+
+        <h3>Interim workaround, no code required</h3>
+        <p>
+          Set the per-supplier <strong>reorder quantity</strong> to the case pack size. Suggestions
+          then land on orderable multiples of the box quantity. The PO still <em>reads</em> in sleeves,
+          so a supplier expecting case quantities may still query it — but the numbers become fillable.
+          Worth doing today regardless of whether the automation gets built.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">03</div>
+    <div class="body">
+      <section id="resolution">
+        <h2>Unit resolution</h2>
+        <p>
+          Some products order by the box. Others order by the base unit. The script must know which,
+          per product, without anyone maintaining a spreadsheet that drifts out of sync with reality.
+        </p>
+        <p>
+          <strong>The ordering unit is a property of the product, not of the supplier</strong> — a SKU
+          orders the same way from whoever supplies it. That is a meaningful simplification: the
+          mapping is one-dimensional.
+        </p>
+
+        <h3>Primary source: the BOM endpoint</h3>
+        <p>AUOM in Cin7 Core appears to be <strong>implemented as an assembly BOM</strong>. The evidence:</p>
+        <ul>
+          <li>Editing AUOMs requires the <strong>Product – Bill of Materials</strong> permission <span class="tag tag-v">V</span>.</li>
+          <li>Cin7's own BOM documentation describes assembly BOMs as being for <em>"joining together
+            multiple items in a pack or kit, or disassembling a case of stock into its component
+            units"</em> <span class="tag tag-v">V</span> — a description of AUOM behaviour in BOM
+            vocabulary.</li>
+        </ul>
+        <p>
+          <code>GET /BillOfMaterials</code> supports an <code>onlyProductsWithBOM=true</code> filter
+          <span class="tag tag-v">V</span>. One paged call should therefore return every SKU that has a
+          case representation, along with its component quantity:
+        </p>
+        <pre><code>GET /BillOfMaterials?onlyProductsWithBOM=true</code></pre>
+        <div class="table-wrap">
+          <table>
+            <caption>What that single response answers</caption>
+            <thead><tr><th>Question</th><th>Answer from the response</th></tr></thead>
+            <tbody>
+              <tr><td>Does this SKU have a pack unit?</td><td>Present in the result set → yes. Absent → no.</td></tr>
+              <tr><td>How many base units per pack?</td><td>The BOM component quantity.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <strong>Cin7 remains the single source of truth.</strong> No parallel spreadsheet, no drift.
+          When someone sets up a new boxed product in Cin7 the normal way, the script picks it up on
+          the next run with no code change.
+        </p>
+        <div class="note is-gating">
+          <span class="note-label">Gating — to confirm</span>
+          <p>
+            The exact BOM payload shape, and confirmation that AUOM definitions actually surface through
+            this endpoint, could not be verified from blocked docs. This is inferred from the permission
+            model and the feature description, not read off a schema.
+          </p>
+        </div>
+
+        <h3>Fallback: Additional Attributes</h3>
+        <p>
+          If AUOM turns out not to be BOM-backed, the fallback stays inside Cin7 rather than escaping to
+          a config file. Cin7 Core supports <strong>Additional Attributes</strong> — custom fields on
+          products, suppliers and customers, managed under <em>Settings → Reference books → Other Items
+          → Additional Attributes</em>, and attachable by default to the purchase process
+          <span class="tag tag-v">V</span>. A <code>Case Pack</code> attribute on each boxed product
+          gives the same lookup with slightly more setup effort.
+        </p>
+
+        <h3>Resolution ladder</h3>
+        <ol class="ladder">
+          <li><strong>BOM / AUOM ratio</strong> — preferred, zero maintenance.</li>
+          <li><strong>Additional Attribute</strong> (<code>Case Pack</code>) — if configured.</li>
+          <li><strong>Base units</strong> — default, <em>and the SKU is flagged in the run report</em>.</li>
+        </ol>
+        <p>
+          <strong>An unknown pack size never blocks the run and never guesses a box quantity.</strong>
+          It orders in sleeves — always a valid, if inconvenient, order — and tells the reviewer it did
+          so. This is safe precisely because a human reviews every PO before it leaves the building.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">04</div>
+    <div class="body">
+      <section id="po-line">
+        <h2>Writing the PO line</h2>
+        <p>Knowing the unit is one thing; getting it onto the purchase order is another.</p>
+        <div class="options">
+          <div class="option is-pick">
+            <h4><span class="key">A</span> <span>AUOM line written in boxes — preferred</span></h4>
+            <p>
+              The order line carries the Box UOM and a quantity of 2. The PO reads the way the supplier
+              expects, and auto-disassembly converts on receipt. Clean end to end.
+            </p>
+          </div>
+          <div class="option">
+            <h4><span class="key">B</span> <span>Base-unit line, rounded to a whole case — safe fallback</span></h4>
+            <p>
+              The line reads "48 sleeves" — a quantity that <em>is</em> two boxes, expressed in the wrong
+              vocabulary. Always works technically, but a supplier expecting case quantities may query it.
+              The reviewer can adjust the UOM in the UI before emailing.
+            </p>
+          </div>
+          <div class="option is-last">
+            <h4><span class="key">C</span> <span>A separate purchasable "box" SKU</span></h4>
+            <p>
+              Model the box as its own product, disassembled into sleeves on receipt. Most control, most
+              setup, most ongoing maintenance — a second SKU per boxed product forever. Only if A and B
+              both fail.
+            </p>
+          </div>
+        </div>
+        <div class="note is-gating">
+          <span class="note-label">Gating — to confirm</span>
+          <p>
+            Whether <code>POST /purchase</code> accepts a UOM on order lines is <strong>unverified</strong>.
+            This is the single most important thing to check. If it does, build A and stop reading.
+          </p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">05</div>
+    <div class="body">
+      <section id="endpoints">
+        <h2>Endpoint map for one run</h2>
+        <p>Auth on every request <span class="tag tag-v">V</span>:</p>
+        <pre><code>api-auth-accountid:      &lt;Account ID&gt;
+api-auth-applicationkey: &lt;Application Key&gt;</code></pre>
+        <p>
+          Both are created on the API setup page at <code>inventory.dearsystems.com/ExternalAPI</code>
+          and are <strong>equivalent to a login and password</strong> — they belong in a secret store,
+          never in the repo <span class="tag tag-v">V</span>.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <caption>Call sequence, one scheduled run</caption>
+            <thead>
+              <tr><th class="num">#</th><th>Call</th><th>Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="num">1</td><td class="call">GET /ref/location<br>GET /supplier</td><td>Resolve IDs once, cache for the run</td></tr>
+              <tr><td class="num">2</td><td class="call">GET /product</td><td>SKU master, default supplier, base UOM</td></tr>
+              <tr><td class="num">3</td><td class="call">GET /BillOfMaterials</td><td>Pack ratios (§03)</td></tr>
+              <tr><td class="num">4</td><td class="call">GET /productAvailability</td><td>OnHand / Available / Allocated / OnOrder</td></tr>
+              <tr><td class="num">5</td><td class="call">GET /purchaseList</td><td>Open POs, for idempotency</td></tr>
+              <tr><td class="num">6</td><td class="call">POST /purchase</td><td>One PO per (supplier, location). Lands in DRAFT</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>Never called:</strong> any authorise or email step. The run ends with drafts.</p>
+
+        <h3>A trap in productAvailability</h3>
+        <div class="note is-trap">
+          <span class="note-label">Read this before writing the query</span>
+          <p>
+            This endpoint <strong>only returns rows where available, on hand and on order are not all
+            zero</strong> <span class="tag tag-v">V</span>. A product that has sold out completely with
+            nothing on order <strong>disappears from the response</strong> — and a stocked-out product
+            is precisely the one most urgently needing a PO.
+          </p>
+          <p>
+            Drive the calculation from the product list (call 2) and left-join availability onto it,
+            treating a missing row as all-zeros. Getting this backwards produces a script that silently
+            never reorders the things it most needs to.
+          </p>
+        </div>
+        <p>Pagination defaults to 100 per page, up to 500 with <code>?limit=500</code> <span class="tag tag-v">V</span>.</p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">06</div>
+    <div class="body">
+      <section id="maths">
+        <h2>Reorder maths</h2>
+        <pre><code>need_base  = par − (OnHand + OnOrder − Allocated)
+
+order_qty  = ceil(need_base / pack_size)   # in pack UOM, when a pack applies
+           = need_base                     # in base units, when it does not
+
+then apply supplier MOQ</code></pre>
+        <p>
+          <code>Available = OnHand − Allocated</code> in Cin7's own model <span class="tag tag-v">V</span>;
+          <code>OnOrder</code> is included so that stock already inbound on an existing PO is not ordered
+          twice.
+        </p>
+        <p>
+          <strong>Where do par levels come from?</strong> A decision is needed. Cin7's native model is
+          <strong>lead, safety and reorder quantity, set per supplier and per location</strong>, from the
+          Suppliers tab <span class="tag tag-v">V</span>. Locations inherit supplier values by default; a
+          location-level value takes priority; if neither exists Cin7 cannot generate a suggestion at all
+          <span class="tag tag-v">V</span>.
+        </p>
+        <div class="options">
+          <div class="option is-pick">
+            <h4><span class="key">→</span> <span>Read par levels from Cin7 — recommended</span></h4>
+            <p>
+              One source of truth, and the built-in reorder reports stay meaningful. Constrained to Cin7's
+              lead / safety / reorder-quantity vocabulary.
+            </p>
+          </div>
+          <div class="option">
+            <h4><span class="key">→</span> <span>Hold them in our own config</span></h4>
+            <p>
+              Arbitrary logic — velocity, seasonality — at the cost of a second place where reorder policy
+              lives, and Cin7's own reports drifting away from what the script does.
+            </p>
+          </div>
+        </div>
+        <p>
+          Prefer reading from Cin7 unless the reorder logic genuinely exceeds what
+          lead / safety / reorder-quantity can express. Two sources of truth for reorder policy is a
+          problem that compounds quietly.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">07</div>
+    <div class="body">
+      <section id="report">
+        <h2>The run report</h2>
+        <p>Every run emits a report alongside the draft POs:</p>
+        <ul>
+          <li>Every line: product, resolved unit, raw need in base units, rounding applied, final quantity.</li>
+          <li><strong>SKUs that fell back to base units</strong> because no pack size resolved — the
+            reviewer's checklist.</li>
+          <li>Anything skipped, and why.</li>
+          <li>API calls made, against the daily budget.</li>
+        </ul>
+        <p>
+          This report is what makes "default to base units" a safe choice rather than a silent failure
+          mode. Without it, the fallback becomes invisible and wrong-unit POs reach suppliers.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">08</div>
+    <div class="body">
+      <section id="constraints">
+        <h2>Constraints</h2>
+
+        <h3>Rate limits</h3>
+        <p>
+          <strong>3 calls/second, 60/minute, 5,000/day</strong>, returning HTTP 429 with a
+          <code>Retry-After</code> header in seconds <span class="tag tag-v">V</span>.
+        </p>
+        <p>
+          The daily cap is the one to design for. With paged bulk reads the whole run costs on the order
+          of tens of calls — a few hundred pages of products and availability, plus one POST per PO. That
+          is comfortable. It becomes a problem only in the naive per-SKU version:
+          <code>GET /productAvailability/{id}</code> looped over 3,000 products blows the daily budget in
+          a single run. <strong>Page the bulk endpoints; never loop per SKU.</strong>
+        </p>
+        <p>
+          Implement 429 handling with <code>Retry-After</code> honoured and exponential backoff from the
+          start, not as a later fix.
+        </p>
+
+        <h3>No transactions</h3>
+        <p>
+          There is no rollback across a multi-PO run. Dying after creating 23 of 40 POs leaves 23 real
+          drafts in Cin7. A re-run must not duplicate them.
+        </p>
+        <p>
+          <strong>Idempotency:</strong> stamp a deterministic per-run reference — e.g.
+          <code>AUTO-2026W33-TUE</code> — on each PO, and query <code>purchaseList</code> for that
+          reference before creating anything. Already present → skip. This makes the run safely
+          re-runnable, which matters more than it sounds for a job on a schedule nobody watches.
+        </p>
+
+        <h3>Draft accumulation</h3>
+        <p>
+          Drafts pile up if nobody reviews them. Two runs a week with no review discipline means an
+          ever-growing pile of stale suggestions computed against stock levels that have since moved.
+          Needs a staleness policy: either the run voids its own unreviewed drafts from the previous
+          cycle, or the report escalates their age. <strong>Decide this before going live</strong> — it
+          is the most likely way this quietly stops being useful.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">09</div>
+    <div class="body">
+      <section id="build-vs-configure">
+        <h2>Build vs configure</h2>
+        <p>Cin7 Core already ships:</p>
+        <ul>
+          <li><strong>Low stock reorder</strong> — reorder points per product, per location, with
+            automatic PO generation <span class="tag tag-v">V</span>.</li>
+          <li><strong>Smart reorder suggestions</strong> — suggested quantities and replenishment
+            recommendations <span class="tag tag-v">V</span>.</li>
+          <li>Per-supplier, per-location <strong>lead, safety and reorder quantity</strong> parameters
+            <span class="tag tag-v">V</span>.</li>
+        </ul>
+        <p><strong>What custom code adds, and only this:</strong></p>
+        <ol>
+          <li>Case-rounding — turning a base-unit need into whole boxes.</li>
+          <li>Per-product unit selection — box vs base unit, resolved automatically.</li>
+          <li>Reorder logic beyond lead / safety / reorder-quantity, if you need it.</li>
+        </ol>
+        <div class="note">
+          <span class="note-label">The honest recommendation</span>
+          <p>
+            If the reorder-quantity workaround in §02 proves good enough in practice, <strong>do not build
+            this.</strong> Configure the built-in low stock reorder, set reorder quantities to case packs,
+            and spend the effort elsewhere. The custom build earns its keep when the case-pack workaround
+            produces POs your suppliers keep querying, or when the reorder maths outgrows Cin7's model.
+          </p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">10</div>
+    <div class="body">
+      <section id="open-questions">
+        <h2>Open questions</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>Ordered by how much each changes the design</caption>
+            <thead><tr><th class="num">#</th><th>Question</th><th>Impact</th></tr></thead>
+            <tbody>
+              <tr class="is-gating">
+                <td class="num">1</td>
+                <td>Does <code>POST /purchase</code> accept a UOM on order lines?</td>
+                <td><strong>Gating.</strong> Decides between designs A, B and C in §04</td>
+              </tr>
+              <tr class="is-gating">
+                <td class="num">2</td>
+                <td>Does <code>GET /BillOfMaterials</code> expose AUOM pack ratios?</td>
+                <td><strong>Gating.</strong> Decides whether unit resolution is free or needs Additional Attributes</td>
+              </tr>
+              <tr><td class="num">3</td><td>Are AUOMs already configured on the affected SKUs?</td><td>Determines whether there is a setup project first</td></tr>
+              <tr><td class="num">4</td><td>Where do par levels live today? How many SKUs × locations?</td><td>Sizes the run and settles the §06 question</td></tr>
+              <tr><td class="num">5</td><td>Is MOQ recorded anywhere in Cin7?</td><td>If not, it needs a home — likely an Additional Attribute</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Questions 1 and 2 are answerable in about ten minutes against a live account with a REST client.
+          Between them they determine whether this is a clean build or a compromised one.
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">11</div>
+    <div class="body">
+      <section id="sequence">
+        <h2>Recommended sequence</h2>
+        <ol class="ladder">
+          <li><strong>Answer questions 1 and 2</strong> against the live account. Ten minutes, decides everything.</li>
+          <li><strong>Configure AUOM</strong> on boxed products if not already done. Standalone value: it fixes
+            receipt conversion whether or not the automation gets built.</li>
+          <li><strong>Set per-supplier reorder quantities to case packs</strong> — the no-code interim fix from
+            §02. Ship this now.</li>
+          <li><strong>Live with steps 2–3 for a few weeks.</strong> If the built-in low stock reorder now
+            produces orders your suppliers accept, stop here and save the build.</li>
+          <li><strong>If not, build</strong> — read-only reorder calculation with a dry-run report first, so the
+            maths can be checked against reality before anything writes to Cin7; then PO creation behind the
+            idempotency guard; then scheduling.</li>
+        </ol>
+        <div class="note">
+          <span class="note-label">Why dry-run first</span>
+          <p>
+            The risk in this project is not API failure — it is correct-looking POs built on wrong par levels
+            or a misread pack size. Prove the numbers before granting write access.
+          </p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="mark">Refs</div>
+    <div class="body">
+      <section id="sources">
+        <h2>Sources</h2>
+        <ul class="sources">
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9982480315407-Connecting-to-the-Cin7-Core-API">Connecting to the Cin7 Core API</a> — auth headers, rate limits</li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/10113609017359-API-V2-introduction">API V2 introduction</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034487144079-List-of-Endpoints">List of Endpoints</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034511096335-Purchase-POST">Purchase_POST</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034492644879-Process-a-Purchase">Process a Purchase</a> — authorise flow, Email → Purchase Order</li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034523140879-ProductAvailability">ProductAvailability</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/12429786547983-Calculation-of-Available-On-Hand-and-Allocated-Stock-quantity">Calculation of Available, On Hand and Allocated Stock</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034463961231-Additional-Units-of-Measure">Additional Units of Measure</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034480650127-Bill-Of-Materials">Bill Of Materials</a> — API filters</li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034480629647-Bill-of-materials-assembly">Bill of materials (assembly)</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034463879055-Additional-Attributes">Additional Attributes</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034475105167-Low-stock-reorder">Low stock reorder</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/10553627492239-Set-reorder-parameters">Set reorder parameters</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/10955759303055-Smart-reorder-suggestions">Smart reorder suggestions</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/12047242513039-Configure-product-suppliers">Configure product suppliers</a></li>
+          <li><a href="https://help.core.cin7.com/hc/en-us/articles/9034435809551-Email-templates-and-emailing-suppliers-customers">Email templates and emailing suppliers</a></li>
+          <li><a href="https://dearinventory.docs.apiary.io/">Cin7 Core Developer Portal (Apiary)</a></li>
+        </ul>
+      </section>
+    </div>
+  </div>
+
+  <footer class="colophon">
+    <span>Cin7 Core API v2</span>
+    <span>Feasibility assessment</span>
+    <span>Draft-first design</span>
+  </footer>
+
+</div>
