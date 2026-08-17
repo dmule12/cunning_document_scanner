@@ -26,11 +26,13 @@ _FLAG_LABEL = {
     LineFlag.ORDERED_AS_BASE_UNIT: "base units — no pack SKU found",
     LineFlag.CAP_EXCEEDED: "EXCEEDS SAFETY CAP",
     LineFlag.MOQ_APPLIED: "raised to MOQ",
+    LineFlag.BELOW_MINIMUM_AFTER_ORDER: "still below minimum after this order",
 }
 
 _SKIP_LABEL = {
     SkipReason.MULTIPLE_BOM_PARENTS: "Multiple pack parents — BOM data needs fixing",
-    SkipReason.NO_REORDER_PARAMETERS: "No reorder parameters set in Cin7",
+    SkipReason.NO_REORDER_PARAMETERS: "No MinimumBeforeReorder set in Cin7",
+    SkipReason.NO_REORDER_QUANTITY: "Below minimum but no reorder quantity set",
     SkipReason.NO_SUPPLIER: "No supplier on the product",
     SkipReason.SUPPLIER_NOT_OPTED_IN: "Supplier not opted in",
     SkipReason.SUFFICIENT_STOCK: "Sufficient stock",
@@ -70,8 +72,19 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
     if capped:
         lines.append(
             f"> **{len(capped)} line(s) exceeded a safety cap.** These are usually a "
-            "wrong BOM ratio or a stale par level rather than a genuine restock. "
-            "Check them before sending anything."
+            "wrong BOM ratio or a stale reorder point rather than a genuine "
+            "restock. Check them before sending anything."
+        )
+        lines.append("")
+
+    undercovering = [
+        ln for ln in result.lines if LineFlag.BELOW_MINIMUM_AFTER_ORDER in ln.flags
+    ]
+    if undercovering:
+        lines.append(
+            f"> **{len(undercovering)} line(s) will still be below the minimum "
+            "after this order.** Their ReorderQuantity in Cin7 is too small for "
+            "current demand, so they will trigger again on the next run."
         )
         lines.append("")
 
@@ -88,10 +101,12 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("## Proposed order lines")
         lines.append("")
         lines.append(
-            "| Base SKU | Ordered as | Location | Par | On hand | Alloc | Inbound | Need | Pack | Qty | Notes |"
+            "| Base SKU | Ordered as | Location | Min | On hand | Alloc | Inbound "
+            "| Position | Short by | Reorder qty | Pack | Qty | Notes |"
         )
         lines.append(
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
+            "| ---: | ---: | --- |"
         )
         for line in sorted(
             result.lines, key=lambda ln: (ln.location, ln.base_sku)
@@ -102,15 +117,24 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
                 f"| {line.base_sku} "
                 f"| {line.order_sku} "
                 f"| {line.location} "
-                f"| {line.par:g} "
+                f"| {line.reorder_point:g} "
                 f"| {line.on_hand:g} "
                 f"| {line.allocated:g} "
                 f"| {line.inbound_base:g} "
-                f"| {line.need_base:g} "
+                f"| {line.position:g} "
+                f"| {line.shortfall:g} "
+                f"| {line.order_base:g} "
                 f"| {pack} "
                 f"| **{line.quantity:g}** "
                 f"| {notes} |"
             )
+        lines.append("")
+        lines.append(
+            "_Min is Cin7's MinimumBeforeReorder — a trigger, not a target. The "
+            "quantity ordered is the stored ReorderQuantity rounded up to whole "
+            "packs, which is what Cin7's own low-stock reorder does; it is not "
+            "sized to close the shortfall._"
+        )
         lines.append("")
 
     # -- inbound provenance ------------------------------------------------

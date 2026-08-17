@@ -8,7 +8,7 @@ purchase orders being fired off?*
 restriction. The real work is elsewhere, in two facts that compound: **the thing you count is not the
 thing you order**, and **Cin7 cannot see the difference once it is on order.**
 
-*Rev. 3 — inbound stock reconstruction.*
+*Rev. 4 — stored reorder points.*
 
 ---
 
@@ -246,15 +246,16 @@ for each open PO line:
     base_sku, ratio   = bom_index.resolve(line.product)   # box → sleeve, or identity
     inbound_base[base_sku, location] += outstanding_units × ratio
 
-# computed on the SLEEVE SKU
-need_base   = par − (OnHand + inbound_base − Allocated)
+# evaluated on the SLEEVE SKU, against Cin7's stored reorder point
+position    = OnHand + inbound_base − Allocated
+trigger     = position <= MinimumBeforeReorder        # a floor, not a target
 
-# ordered on the BOX SKU
-boxes       = ceil(need_base / base_units_per_box)
+# ordered on the BOX SKU — a fixed amount, not the shortfall
+boxes       = ceil(ReorderQuantity / base_units_per_box)
 order_line  = { product: box_sku, quantity: boxes }
 
 # or, when no box SKU exists
-order_line  = { product: base_sku, quantity: need_base }   # flagged in the report
+order_line  = { product: base_sku, quantity: ReorderQuantity }   # flagged
 
 then apply supplier MOQ
 ```
@@ -308,14 +309,37 @@ The reference guards crash-retry *within* a single run. The inbound calculation 
 *across* runs. Two separate mechanisms for two separate problems — and only the second one addresses
 the `OnOrder` gap.
 
-**Where do par levels come from?** Cin7's native model is **lead, safety and reorder quantity, set
-per supplier and per location**, from the Suppliers tab **[V]**. Locations inherit supplier values by
-default; a location-level value takes priority; if neither exists Cin7 cannot generate a suggestion
-at all **[V]**.
+### Where the reorder point comes from
 
-**Recommendation: read par levels from Cin7** unless the reorder logic genuinely exceeds what
-lead/safety/reorder-quantity can express. Two sources of truth for reorder policy is a problem that
-compounds quietly. Note the levels belong on the **sleeve** SKU, since that is what depletes.
+**Cin7 stores it. Read it, don't derive it.**
+
+`MinimumBeforeReorder` and `ReorderQuantity` are exposed API fields on the Product structure
+**[V]**, settable on the product and overridable per location **[V]**. The reorder point is data,
+not something to reconstruct.
+
+> **Correction.** Rev. 3 of this document stated that Cin7 exposes only lead days, safety days and
+> reorder quantity, and that a par level therefore had to be derived as
+> `daily_demand × (lead + safety)` with demand estimated from sales history. **That was wrong.** It
+> is corrected here rather than quietly edited out, because this document's usefulness rests on its
+> claims being traceable.
+
+The model is a **trigger, not a target**:
+
+- when position falls to or below `MinimumBeforeReorder`, order;
+- order `ReorderQuantity` — a fixed amount, not however much would restore the minimum.
+
+That is exactly what Cin7's own low-stock reorder does, so the automation's suggestions stay
+directly comparable with Cin7's rather than approximating them with a formula that drifts.
+
+**A product whose reorder quantity is too small will not be topped up.** It orders the stored
+amount and triggers again next run. The script flags those lines rather than ordering more, because
+overriding a number someone deliberately set is the wrong default — but the flag makes the
+under-sized setting visible instead of invisible.
+
+Products with no minimum set, or a minimum of zero (Cin7's default), are skipped and reported. No
+reorder point means nobody has opted that product into automatic reordering.
+
+Note the reorder point belongs on the **sleeve** SKU, since that is what depletes.
 
 ---
 
@@ -400,7 +424,7 @@ visible and a lost edit is not.
 | 3 | Does `GET /purchase` expose per-line received quantities? | Partial-receipt handling depends on it; without it, inbound cannot be computed correctly |
 | 4 | Are supplier Additional Attributes returned by `GET /supplier`? | Decides whether the allowlist lives in Cin7 or in config |
 | 5 | Is every boxed product's BOM configured, and one box per sleeve? | Sizes the data-cleanup task before go-live |
-| 6 | Where do par levels live today? How many SKUs × locations? | Sizes the run and settles the [§6](#6-reorder-maths) question |
+| 6 | How many products actually have a `MinimumBeforeReorder` set? | Determines how much of the catalogue is eligible at all |
 | 7 | Is MOQ recorded anywhere in Cin7? | If not, it needs a home — likely an Additional Attribute |
 
 **Resolved:**
@@ -409,6 +433,9 @@ visible and a lost edit is not.
   points at a product, not a unit.
 - *Does an open box-SKU PO appear in the sleeve SKU's `OnOrder`?* — **No** **[A]**. Confirmed against
   the live system. This is why [§6](#6-reorder-maths) reconstructs inbound stock from open POs.
+- *Where do par levels come from?* — **Cin7 stores them** as `MinimumBeforeReorder` /
+  `ReorderQuantity` **[V]**. Rev. 3 wrongly assumed they had to be derived from demand; see
+  [§6](#6-reorder-maths).
 
 Question 3 has been promoted to near-gating by that answer: if per-line received quantities are not
 available, partial receipts cannot be netted off and the inbound figure will be wrong in exactly the

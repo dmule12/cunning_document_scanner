@@ -29,31 +29,20 @@ locations:
   include: []
 
 # ---------------------------------------------------------------------------
-# Par levels
+# Reorder points
 #
-# Read from Cin7's own reorder parameters (lead days, safety days, reorder
-# quantity), set per supplier and per location on the product's Suppliers tab.
+# There is nothing to configure here. Cin7 stores the reorder point itself,
+# as MinimumBeforeReorder with a companion ReorderQuantity, set on the product
+# and optionally overridden per location. The tool reads both.
 #
-# Those three numbers do not contain a consumption rate, so a par level is
-# derived as:
+# The model is a trigger, not a target: when stock reaches the minimum, order
+# the reorder quantity — a fixed amount, rounded up to whole packs. That is
+# what Cin7's own low-stock reorder does, which keeps the two comparable.
 #
-#     par = daily_demand * (lead_days + safety_days)
-#
-# where daily_demand comes from sale history over `demand_window_days`.
-#
-# THIS IS THE LEAST-VERIFIED PART OF THE SYSTEM. See README, "Known unknowns".
+# A product with no minimum set (or a minimum of 0, which is Cin7's default)
+# is skipped and reported. No reorder point means nobody has decided that
+# product should be reordered automatically.
 # ---------------------------------------------------------------------------
-par_levels:
-  demand_window_days: 90
-
-  # If a product has neither supplier-level nor location-level reorder
-  # parameters, Cin7 itself cannot generate a suggestion. We match that
-  # behaviour: skip and report.
-  skip_when_parameters_missing: true
-
-  # Floor on daily demand. Prevents a product with one sale in 90 days from
-  # producing a par level of essentially zero.
-  min_daily_demand: 0.0
 
 # ---------------------------------------------------------------------------
 # Safety caps

@@ -218,32 +218,89 @@ def test_missing_attribute_is_none_meaning_not_opted_in():
 # ---------------------------------------------------------------------------
 
 
-def test_parses_supplier_and_location_reorder_parameters():
+def test_parses_product_level_reorder_point():
+    parsed = schema.parse_reorder_parameters(
+        {
+            "ID": "prod-1",
+            "DefaultSupplierID": "sup-1",
+            "MinimumBeforeReorder": 100,
+            "ReorderQuantity": 48,
+        }
+    )
+    product_level = [p for p in parsed if p.location is None][0]
+    assert product_level.minimum_before_reorder == 100
+    assert product_level.reorder_quantity == 48
+    assert product_level.supplier_id == "sup-1"
+    assert product_level.is_complete is True
+
+
+def test_parses_per_location_reorder_points():
+    parsed = schema.parse_reorder_parameters(
+        {
+            "ID": "prod-1",
+            "MinimumBeforeReorder": 100,
+            "ReorderQuantity": 48,
+            "ReorderLevels": [
+                {"Location": "Main", "MinimumBeforeReorder": 30, "ReorderQuantity": 24}
+            ],
+        }
+    )
+    location_level = [p for p in parsed if p.location == "Main"][0]
+    assert location_level.minimum_before_reorder == 30
+    assert location_level.reorder_quantity == 24
+
+
+def test_finds_location_blocks_nested_under_a_supplier():
+    """Cin7's UI puts low-stock reorder points on the Suppliers tab.
+
+    The API shape for that is unconfirmed, so both placements are checked.
+    """
     parsed = schema.parse_reorder_parameters(
         {
             "ID": "prod-1",
             "Suppliers": [
                 {
                     "SupplierID": "sup-1",
-                    "Lead": 14,
-                    "Safety": 7,
-                    "ReorderQuantity": 2,
                     "Locations": [
-                        {"Location": "Main", "Lead": 10, "Safety": 3, "ReorderQuantity": 4}
+                        {
+                            "Location": "Main",
+                            "MinimumBeforeReorder": 15,
+                            "ReorderQuantity": 12,
+                        }
                     ],
                 }
             ],
         }
     )
-
-    supplier_level = [p for p in parsed if p.location is None][0]
-    assert supplier_level.lead_days == 14
-    assert supplier_level.safety_days == 7
-
     location_level = [p for p in parsed if p.location == "Main"][0]
-    assert location_level.lead_days == 10
-    assert location_level.reorder_quantity == 4
+    assert location_level.minimum_before_reorder == 15
 
 
-def test_product_without_suppliers_yields_nothing():
-    assert schema.parse_reorder_parameters({"ID": "prod-1"}) == []
+def test_zero_minimum_parses_but_is_not_complete():
+    """Cin7 defaults the field to 0; that must not read as a real trigger."""
+    parsed = schema.parse_reorder_parameters(
+        {"ID": "prod-1", "MinimumBeforeReorder": 0, "ReorderQuantity": 48}
+    )
+    assert parsed[0].minimum_before_reorder == 0
+    assert parsed[0].is_complete is False
+
+
+def test_missing_reorder_quantity_is_not_complete():
+    parsed = schema.parse_reorder_parameters(
+        {"ID": "prod-1", "MinimumBeforeReorder": 100}
+    )
+    assert parsed[0].minimum_before_reorder == 100
+    assert parsed[0].reorder_quantity is None
+    assert parsed[0].is_complete is False
+
+
+def test_product_without_reorder_fields_yields_an_empty_entry():
+    """Still returns a row, so the caller can distinguish "no reorder point"
+    from "product not found"."""
+    parsed = schema.parse_reorder_parameters({"ID": "prod-1"})
+    assert len(parsed) == 1
+    assert parsed[0].minimum_before_reorder is None
+
+
+def test_product_without_id_yields_nothing():
+    assert schema.parse_reorder_parameters({"MinimumBeforeReorder": 10}) == []

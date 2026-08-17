@@ -441,7 +441,7 @@
       <span class="sep">/</span>
       <span>Feasibility</span>
       <span class="sep">/</span>
-      <span>Rev. 3</span>
+      <span>Rev. 4</span>
     </div>
     <h1>Twice-weekly purchase orders from par&nbsp;levels</h1>
     <p class="standfirst">
@@ -826,15 +826,16 @@ for each open PO line:
     base, ratio = bom_index.resolve(line.product)    # box → sleeve, or identity
     inbound_base[base, location] += outstanding × ratio
 
-# computed on the SLEEVE SKU
-need_base   = par − (OnHand + inbound_base − Allocated)
+# evaluated on the SLEEVE SKU, against Cin7's stored reorder point
+position    = OnHand + inbound_base − Allocated
+trigger     = position &lt;= MinimumBeforeReorder     # a floor, not a target
 
-# ordered on the BOX SKU
-boxes       = ceil(need_base / base_units_per_box)
+# ordered on the BOX SKU — a fixed amount, not the shortfall
+boxes       = ceil(ReorderQuantity / base_units_per_box)
 order_line  = { product: box_sku, quantity: boxes }
 
 # or, when no box SKU exists
-order_line  = { product: base_sku, quantity: need_base }   # flagged
+order_line  = { product: base_sku, quantity: ReorderQuantity }   # flagged
 
 then apply supplier MOQ</code></pre>
         <p><code>Available = OnHand − Allocated</code> in Cin7's own model <span class="tag tag-v">V</span>.</p>
@@ -904,18 +905,47 @@ then apply supplier MOQ</code></pre>
           duplication <em>across</em> runs. Two separate mechanisms for two separate problems — and only
           the second addresses the <code>OnOrder</code> gap.
         </p>
+        <h3>Where the reorder point comes from</h3>
+        <div class="governing">
+          <p>Cin7 stores it. Read it, don't derive it.</p>
+        </div>
         <p>
-          <strong>Where do par levels come from?</strong> Cin7's native model is <strong>lead, safety and
-          reorder quantity, set per supplier and per location</strong>, from the Suppliers tab
-          <span class="tag tag-v">V</span>. Locations inherit supplier values by default; a location-level
-          value takes priority; if neither exists Cin7 cannot generate a suggestion at all
-          <span class="tag tag-v">V</span>.
+          <code>MinimumBeforeReorder</code> and <code>ReorderQuantity</code> are exposed API fields on
+          the Product structure <span class="tag tag-v">V</span>, settable on the product and
+          overridable per location <span class="tag tag-v">V</span>. The reorder point is data, not
+          something to reconstruct.
+        </p>
+        <div class="note is-trap">
+          <span class="note-label">Correction to Rev. 3</span>
+          <p>
+            Rev. 3 of this document stated that Cin7 exposes only lead days, safety days and reorder
+            quantity, and that a par level therefore had to be derived as
+            <code>daily_demand × (lead + safety)</code> with demand estimated from sales history.
+            <strong>That was wrong.</strong> It is corrected here rather than quietly edited out,
+            because this document's usefulness rests on its claims being traceable.
+          </p>
+        </div>
+        <p>The model is a <strong>trigger, not a target</strong>:</p>
+        <ul>
+          <li>when position falls to or below <code>MinimumBeforeReorder</code>, order;</li>
+          <li>order <code>ReorderQuantity</code> — a fixed amount, not however much would restore the
+            minimum.</li>
+        </ul>
+        <p>
+          That is exactly what Cin7's own low-stock reorder does, so the automation's suggestions stay
+          directly comparable with Cin7's rather than approximating them with a formula that drifts.
         </p>
         <p>
-          <strong>Read par levels from Cin7</strong> unless the reorder logic genuinely exceeds what
-          lead / safety / reorder-quantity can express — two sources of truth for reorder policy is a
-          problem that compounds quietly. Note the levels belong on the <strong>sleeve</strong> SKU, since
-          that is what depletes.
+          <strong>A product whose reorder quantity is too small will not be topped up.</strong> It
+          orders the stored amount and triggers again next run. The script flags those lines rather
+          than ordering more, because overriding a number someone deliberately set is the wrong
+          default — but the flag makes the under-sized setting visible instead of invisible.
+        </p>
+        <p>
+          Products with no minimum set, or a minimum of zero (Cin7's default), are skipped and
+          reported. No reorder point means nobody has opted that product into automatic reordering.
+          Note the reorder point belongs on the <strong>sleeve</strong> SKU, since that is what
+          depletes.
         </p>
       </section>
     </div>
@@ -1050,10 +1080,11 @@ then apply supplier MOQ</code></pre>
               </tr>
               <tr><td class="num">4</td><td>Are supplier Additional Attributes returned by <code>GET /supplier</code>?</td><td>Decides whether the allowlist lives in Cin7 or in config</td></tr>
               <tr><td class="num">5</td><td>Is every boxed product's BOM configured, and one box per sleeve?</td><td>Sizes the data-cleanup task before go-live</td></tr>
-              <tr><td class="num">6</td><td>Where do par levels live today? How many SKUs × locations?</td><td>Sizes the run and settles the §06 question</td></tr>
+              <tr><td class="num">6</td><td>How many products actually have a <code>MinimumBeforeReorder</code> set?</td><td>Determines how much of the catalogue is eligible at all</td></tr>
               <tr><td class="num">7</td><td>Is MOQ recorded anywhere in Cin7?</td><td>If not, it needs a home — likely an Additional Attribute</td></tr>
               <tr class="is-resolved"><td class="num">—</td><td><s>Does <code>POST /purchase</code> accept a UOM on order lines?</s></td><td><strong>Resolved:</strong> moot. The box is a separate SKU, so the line points at a product, not a unit</td></tr>
               <tr class="is-resolved"><td class="num">—</td><td><s>Does an open box-SKU PO appear in the sleeve's <code>OnOrder</code>?</s></td><td><strong>Resolved: no</strong> <span class="tag tag-a">A</span>. This is why §06 reconstructs inbound stock from open POs</td></tr>
+              <tr class="is-resolved"><td class="num">—</td><td><s>Where do par levels come from?</s></td><td><strong>Resolved:</strong> Cin7 stores them as <code>MinimumBeforeReorder</code> / <code>ReorderQuantity</code> <span class="tag tag-v">V</span>. Rev. 3 wrongly assumed they had to be derived</td></tr>
             </tbody>
           </table>
         </div>
@@ -1182,7 +1213,7 @@ then apply supplier MOQ</code></pre>
   <footer class="colophon">
     <span>Cin7 Core API v2</span>
     <span>Feasibility assessment</span>
-    <span>Rev. 3 — inbound reconstruction</span>
+    <span>Rev. 4 — stored reorder points</span>
   </footer>
 
 </div>

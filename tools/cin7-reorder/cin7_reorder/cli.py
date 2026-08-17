@@ -25,7 +25,6 @@ import typer
 
 from .client import Cin7Client
 from .config import Config, ConfigError, Credentials
-from .parlevels import SalesHistoryDemand, StaticDemand
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
 from .report import render_json, render_markdown
@@ -167,16 +166,10 @@ def _run(
         )
         raise typer.Exit(code=2)
 
-    # Demand history is not yet wired to a Cin7 endpoint. Until it is, `plan`
-    # reports every product as lacking demand data rather than inventing a
-    # number — a fabricated par level would produce confident, wrong orders.
-    demand = StaticDemand(values={})
-
     with Cin7Client(credentials, config.api, read_only=dry_run) as client:
         pipeline = Pipeline(
             client=client,
             config=config,
-            demand=demand,
             state_path=state_path,
             dry_run=dry_run,
         )

@@ -304,7 +304,7 @@ def _probe_supplier_attributes(client: Cin7Client, sample_size: int) -> ProbeFin
 
 
 def _probe_reorder_parameters(client: Cin7Client, sample_size: int) -> ProbeFinding:
-    question = "Are per-supplier reorder parameters (lead / safety / qty) exposed?"
+    question = "Are MinimumBeforeReorder / ReorderQuantity exposed on products?"
 
     try:
         payload = client.get(schema.ENDPOINT_PRODUCT, page=1, limit=sample_size)
@@ -317,41 +317,67 @@ def _probe_reorder_parameters(client: Cin7Client, sample_size: int) -> ProbeFind
     if not records:
         return ProbeFinding(question=question, answer="NO PRODUCTS", ok=False)
 
-    found: list[str] = []
+    usable: list[str] = []
+    minimum_seen = 0
+    trigger_without_quantity = 0
+
     for record in records:
         for params in schema.parse_reorder_parameters(record):
+            has_minimum = (
+                params.minimum_before_reorder is not None
+                and params.minimum_before_reorder > 0
+            )
+            if has_minimum:
+                minimum_seen += 1
             if params.is_complete:
-                found.append(
-                    f"product {params.product_id} / supplier {params.supplier_id}"
-                    f"{'' if params.location is None else ' @ ' + params.location}: "
-                    f"lead {params.lead_days:g}d, safety {params.safety_days:g}d, "
-                    f"reorder qty {params.reorder_quantity}"
+                where = (
+                    "product level"
+                    if params.location is None
+                    else f"location {params.location}"
                 )
+                usable.append(
+                    f"{params.product_id} ({where}): min "
+                    f"{params.minimum_before_reorder:g}, reorder qty "
+                    f"{params.reorder_quantity:g}"
+                )
+            elif has_minimum:
+                trigger_without_quantity += 1
 
-    if not found:
+    if not minimum_seen:
         return ProbeFinding(
             question=question,
-            answer="NOT FOUND in the sample",
+            answer="NO REORDER POINTS in the sample",
             ok=None,
             detail=(
-                f"Product record keys: {sorted(records[0].keys())}. No complete "
-                "lead/safety pair was parsed from the sampled products."
+                f"Product record keys: {sorted(records[0].keys())}. No product "
+                "in the sample had a MinimumBeforeReorder above zero."
             ),
             sample_keys=sorted(records[0].keys()),
             fix=(
-                "Either these products have no reorder parameters set, or the "
-                "keys differ. Check PRODUCT_SUPPLIER_CONTAINER_KEYS and the "
-                "lead/safety key names in schema.parse_reorder_parameters. "
-                "Note that par levels also need a demand rate, which these "
-                "three numbers do not contain — see parlevels.py."
+                "Either these products genuinely have no reorder point set — "
+                "in which case the tool will skip them, which is intended — or "
+                "the key differs. Check MINIMUM_KEYS and REORDER_QUANTITY_KEYS "
+                "in schema.py against the keys listed above. Try a larger "
+                "--sample-size, or a product you know has a low-stock reorder "
+                "point configured."
             ),
+        )
+
+    detail = (
+        f"{len(usable)} usable reorder point(s) in {len(records)} sampled "
+        f"product(s). Examples: " + "; ".join(usable[:3])
+    )
+    if trigger_without_quantity:
+        detail += (
+            f" — {trigger_without_quantity} had a minimum but no reorder "
+            "quantity, and will be skipped and reported."
         )
 
     return ProbeFinding(
         question=question,
-        answer="yes",
+        answer="YES",
         ok=True,
-        detail="; ".join(found[:3]),
+        detail=detail,
         sample_keys=sorted(records[0].keys()),
     )
 

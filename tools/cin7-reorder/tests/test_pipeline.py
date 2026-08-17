@@ -17,7 +17,6 @@ import pytest
 from cin7_reorder.client import Cin7Client, NullRateLimiter
 from cin7_reorder.config import ApiConfig, Config, Credentials, SafetyConfig, SupplierConfig
 from cin7_reorder.models import LineFlag, SkipReason
-from cin7_reorder.parlevels import StaticDemand
 from cin7_reorder.pipeline import Pipeline
 
 SLEEVE = "prod-sleeve"
@@ -28,45 +27,51 @@ SUPPLIER_OFF = "sup-off"
 LOCATION = "Main"
 
 
+NO_MINIMUM = "prod-nominimum"
+
+
 def _products() -> list[dict]:
-    supplier_block = [
-        {
-            "SupplierID": SUPPLIER_ON,
-            "Lead": 10,
-            "Safety": 5,
-            "ReorderQuantity": 2,
-        }
-    ]
     return [
         {
             "ID": SLEEVE,
             "SKU": "SLV-001",
             "Name": "Sleeve",
             "DefaultSupplierID": SUPPLIER_ON,
-            "Suppliers": supplier_block,
+            "MinimumBeforeReorder": 100,
+            "ReorderQuantity": 48,
         },
         {
             "ID": STOCKED_OUT,
             "SKU": "SLV-OUT",
             "Name": "Sold out sleeve",
             "DefaultSupplierID": SUPPLIER_ON,
-            "Suppliers": supplier_block,
+            "MinimumBeforeReorder": 20,
+            "ReorderQuantity": 30,
+        },
+        {
+            # No reorder point set: nobody opted this into automation.
+            "ID": NO_MINIMUM,
+            "SKU": "SLV-NONE",
+            "Name": "No reorder point",
+            "DefaultSupplierID": SUPPLIER_ON,
+            "MinimumBeforeReorder": 0,
+            "ReorderQuantity": 10,
         },
         {
             "ID": BOX,
             "SKU": "BOX-024",
             "Name": "Box of 24",
             "DefaultSupplierID": SUPPLIER_ON,
-            "Suppliers": supplier_block,
+            "MinimumBeforeReorder": 5,
+            "ReorderQuantity": 5,
         },
         {
             "ID": "prod-other",
             "SKU": "OTH-1",
             "Name": "Other supplier's product",
             "DefaultSupplierID": SUPPLIER_OFF,
-            "Suppliers": [
-                {"SupplierID": SUPPLIER_OFF, "Lead": 5, "Safety": 5}
-            ],
+            "MinimumBeforeReorder": 50,
+            "ReorderQuantity": 50,
         },
     ]
 
@@ -165,9 +170,6 @@ def pipeline(tmp_path: Path) -> Pipeline:
     return Pipeline(
         client=client,
         config=config,
-        demand=StaticDemand(
-            {(SLEEVE, LOCATION): 6.0, (STOCKED_OUT, LOCATION): 2.0}
-        ),
         state_path=tmp_path / "fingerprints.json",
         dry_run=True,
     )
@@ -187,21 +189,32 @@ def test_only_opted_in_suppliers_are_considered(pipeline):
 def test_orders_the_box_and_nets_off_partial_receipt(pipeline):
     """The whole design in one assertion.
 
-    par        = 6/day * (10 lead + 5 safety) = 90 sleeves
-    on hand    = 10
-    inbound    = (3 ordered - 1 received) boxes * 24 = 48 sleeves
-    need       = 90 - (10 + 48) = 32 sleeves
-    order      = ceil(32 / 24) = 2 boxes, against the BOX sku
+    minimum   = 100 sleeves (MinimumBeforeReorder, read from Cin7)
+    on hand   = 10
+    inbound   = (3 ordered - 1 received) boxes * 24 = 48 sleeves
+    position  = 58, which is at or below the minimum, so it triggers
+    order     = ReorderQuantity 48 -> ceil(48 / 24) = 2 boxes, against BOX
     """
     result = pipeline.run()
     line = next(ln for ln in result.lines if ln.base_product_id == SLEEVE)
 
-    assert line.par == 90
+    assert line.reorder_point == 100
     assert line.inbound_base == 48
-    assert line.need_base == 32
+    assert line.position == 58
+    assert line.shortfall == 42
+    assert line.order_base == 48
     assert line.order_product_id == BOX
     assert line.quantity == 2
     assert line.inbound_sources == ("po-open",)
+
+
+def test_product_without_a_minimum_is_skipped(pipeline):
+    """MinimumBeforeReorder of 0 means nobody opted it in."""
+    result = pipeline.run()
+
+    assert all(ln.base_product_id != NO_MINIMUM for ln in result.lines)
+    skip = next(s for s in result.skipped if s.base_product_id == NO_MINIMUM)
+    assert skip.reason is SkipReason.NO_REORDER_PARAMETERS
 
 
 def test_stocked_out_product_missing_from_availability_still_ordered(pipeline):
@@ -218,8 +231,9 @@ def test_stocked_out_product_missing_from_availability_still_ordered(pipeline):
 
     assert line is not None, "stocked-out product was silently dropped"
     assert line.on_hand == 0
-    # par = 2/day * 15 days = 30; no pack parent, so ordered as base units.
-    assert line.need_base == 30
+    assert line.reorder_point == 20
+    # ReorderQuantity 30, no pack parent, so ordered as 30 base units.
+    assert line.quantity == 30
     assert LineFlag.ORDERED_AS_BASE_UNIT in line.flags
 
 
@@ -266,9 +280,6 @@ def test_total_line_cap_aborts_the_run(tmp_path):
     result = Pipeline(
         client=client,
         config=config,
-        demand=StaticDemand(
-            {(SLEEVE, LOCATION): 6.0, (STOCKED_OUT, LOCATION): 2.0}
-        ),
         state_path=tmp_path / "s.json",
         dry_run=True,
     ).run()

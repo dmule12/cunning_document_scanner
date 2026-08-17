@@ -48,8 +48,8 @@ from .models import (
     SkippedProduct,
     SuggestedLine,
 )
-from .parlevels import DemandEstimator, par_level, resolve_parameters
 from .reorder import Demand, availability_for, evaluate
+from .reorderpoints import resolve as resolve_reorder_point
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,6 @@ log = logging.getLogger(__name__)
 class Pipeline:
     client: Cin7Client
     config: Config
-    demand: DemandEstimator
     state_path: Path
     dry_run: bool = True
 
@@ -271,36 +270,15 @@ class Pipeline:
                 if not self.config.includes_location(location):
                     continue
 
-                params = resolve_parameters(
+                point = resolve_reorder_point(
                     reorder_params.get(product.id, []),
                     supplier_id=product.supplier_id,
                     location=location,
                 )
-                if params is None:
-                    if self.config.par_levels.skip_when_parameters_missing:
-                        result.skipped.append(
-                            SkippedProduct(
-                                base_product_id=product.id,
-                                base_sku=product.sku,
-                                location=location,
-                                reason=SkipReason.NO_REORDER_PARAMETERS,
-                                detail=(
-                                    "No lead/safety values at supplier or "
-                                    "location level. Cin7 cannot suggest a "
-                                    "reorder for this product either."
-                                ),
-                            )
-                        )
-                    continue
-
-                par = par_level(
-                    params,
-                    self.demand,
-                    product.id,
-                    location,
-                    self.config.par_levels,
-                )
-                if par is None:
+                if point is None:
+                    # No MinimumBeforeReorder set means nobody has decided
+                    # this product should be reordered automatically. Cin7's
+                    # own low-stock reorder would ignore it too.
                     result.skipped.append(
                         SkippedProduct(
                             base_product_id=product.id,
@@ -308,8 +286,8 @@ class Pipeline:
                             location=location,
                             reason=SkipReason.NO_REORDER_PARAMETERS,
                             detail=(
-                                "No demand history, so a par level cannot be "
-                                "derived from lead and safety days."
+                                "No MinimumBeforeReorder set at product or "
+                                "location level."
                             ),
                         )
                     )
@@ -321,12 +299,12 @@ class Pipeline:
                     Demand(
                         product=product,
                         location=location,
-                        par=par,
+                        reorder_point=point.minimum,
                         on_hand=stock.on_hand,
                         allocated=stock.allocated,
                         inbound_base=inbound.get(product.id, location),
                         inbound_sources=inbound.sources_for(product.id, location),
-                        reorder_quantity=params.reorder_quantity,
+                        reorder_quantity=point.reorder_quantity,
                     ),
                     bom,
                     self.config,

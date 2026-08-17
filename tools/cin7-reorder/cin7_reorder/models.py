@@ -135,23 +135,36 @@ class PurchaseOrder:
 
 @dataclass(frozen=True)
 class ReorderParameters:
-    """Cin7's per-supplier, per-location reorder settings.
+    """Cin7's stored reorder settings for a product.
 
-    Cin7's documented precedence: a location-level value wins over the
-    supplier-level default; if neither exists, Cin7 cannot generate a
-    suggestion at all, and neither can we.
+    ``minimum_before_reorder`` is the trigger level and
+    ``reorder_quantity`` is how much to order when it is reached — Cin7's own
+    low-stock reorder model, read rather than reconstructed.
+
+    ``location`` is ``None`` for the product-level default and set for a
+    per-location override, which takes precedence.
     """
 
     product_id: str
-    supplier_id: str
+    supplier_id: Optional[str] = None
     location: Optional[str] = None
-    lead_days: Optional[float] = None
-    safety_days: Optional[float] = None
+    minimum_before_reorder: Optional[float] = None
     reorder_quantity: Optional[float] = None
 
     @property
     def is_complete(self) -> bool:
-        return self.lead_days is not None and self.safety_days is not None
+        """Whether this entry can actually drive an order.
+
+        A minimum of zero counts as unset: Cin7 defaults the field to 0, so
+        treating it as a real trigger would pull the whole catalogue into
+        scope.
+        """
+        return (
+            self.minimum_before_reorder is not None
+            and self.minimum_before_reorder > 0
+            and self.reorder_quantity is not None
+            and self.reorder_quantity > 0
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +178,10 @@ class LineFlag(str, Enum):
     ORDERED_AS_BASE_UNIT = "ordered_as_base_unit"
     CAP_EXCEEDED = "cap_exceeded"
     MOQ_APPLIED = "moq_applied"
+    #: The reorder quantity does not lift stock back above the minimum, so
+    #: this product will trigger again on the next run. Usually means the
+    #: reorder quantity is set too low in Cin7 for current demand.
+    BELOW_MINIMUM_AFTER_ORDER = "below_minimum_after_order"
 
 
 class SkipReason(str, Enum):
@@ -172,6 +189,7 @@ class SkipReason(str, Enum):
 
     MULTIPLE_BOM_PARENTS = "multiple_bom_parents"
     NO_REORDER_PARAMETERS = "no_reorder_parameters"
+    NO_REORDER_QUANTITY = "no_reorder_quantity"
     NO_SUPPLIER = "no_supplier"
     SUPPLIER_NOT_OPTED_IN = "supplier_not_opted_in"
     SUFFICIENT_STOCK = "sufficient_stock"
@@ -188,11 +206,18 @@ class SuggestedLine:
     location: str
     supplier_id: str
 
-    par: float
+    #: Cin7's MinimumBeforeReorder — the trigger, not a target.
+    reorder_point: float
     on_hand: float
     allocated: float
     inbound_base: float
-    need_base: float
+
+    #: How far below the trigger the position sits. Reported for the
+    #: reviewer; it does not drive the quantity, because Cin7's model orders
+    #: a fixed ReorderQuantity rather than topping up to the minimum.
+    shortfall: float
+    #: The ReorderQuantity from Cin7, in base units, before pack rounding.
+    order_base: float
 
     units_per_pack: float
     quantity: float
@@ -203,6 +228,11 @@ class SuggestedLine:
     @property
     def is_pack(self) -> bool:
         return self.order_product_id != self.base_product_id
+
+    @property
+    def position(self) -> float:
+        """Stock position the trigger was evaluated against."""
+        return self.on_hand + self.inbound_base - self.allocated
 
 
 @dataclass(frozen=True)
