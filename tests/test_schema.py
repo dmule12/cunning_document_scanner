@@ -1,0 +1,249 @@
+"""The API adapter.
+
+These tests pin the *tolerance* of the parsers, not the correctness of the
+field names — the names are unverified guesses and only `probe` can settle
+them. What is asserted here is that an unexpected shape degrades to a
+missing value rather than crashing a scheduled run or, worse, silently
+parsing as a valid number.
+"""
+
+from __future__ import annotations
+
+from cin7_reorder import schema
+from cin7_reorder.models import PurchaseStatus
+
+
+# ---------------------------------------------------------------------------
+# Envelopes and coercion
+# ---------------------------------------------------------------------------
+
+
+def test_extract_list_finds_named_envelope():
+    assert schema.extract_list({"Products": [{"ID": "1"}]}) == [{"ID": "1"}]
+
+
+def test_extract_list_falls_back_to_any_list_of_dicts():
+    """Cin7 adds endpoints faster than the envelope list gets updated."""
+    assert schema.extract_list({"SomethingNew": [{"ID": "1"}]}) == [{"ID": "1"}]
+
+
+def test_extract_list_handles_bare_lists_and_junk():
+    assert schema.extract_list([{"ID": "1"}]) == [{"ID": "1"}]
+    assert schema.extract_list({}) == []
+    assert schema.extract_list(None) == []
+    assert schema.extract_list("nonsense") == []
+
+
+def test_get_first_is_case_insensitive():
+    assert schema.get_first({"productid": "p1"}, "ProductID") == "p1"
+
+
+def test_as_float_tolerates_strings_and_blanks():
+    assert schema.as_float("12.5") == 12.5
+    assert schema.as_float("") == 0.0
+    assert schema.as_float(None) == 0.0
+    assert schema.as_float("not a number") == 0.0
+
+
+def test_as_optional_float_keeps_absent_distinct_from_zero():
+    """Critical for reorder parameters.
+
+    A lead time of 0 and a missing lead time mean very different things;
+    conflating them would silently produce a par level of zero and stop the
+    product ever being reordered.
+    """
+    assert schema.as_optional_float(0) == 0.0
+    assert schema.as_optional_float(None) is None
+    assert schema.as_optional_float("") is None
+
+
+# ---------------------------------------------------------------------------
+# Bills of materials
+# ---------------------------------------------------------------------------
+
+
+def test_parses_bom_components():
+    parsed = schema.parse_bill_of_materials(
+        {
+            "ID": "box-1",
+            "BOMComponents": [{"ProductID": "sleeve-1", "Quantity": 24}],
+        }
+    )
+    assert parsed.parent_product_id == "box-1"
+    assert parsed.components[0].component_product_id == "sleeve-1"
+    assert parsed.components[0].quantity == 24
+
+
+def test_bom_accepts_alternative_component_keys():
+    parsed = schema.parse_bill_of_materials(
+        {"ID": "box-1", "Components": [{"ComponentProductID": "s1", "Qty": 12}]}
+    )
+    assert parsed.components[0].component_product_id == "s1"
+    assert parsed.components[0].quantity == 12
+
+
+def test_bom_with_unknown_component_key_parses_empty_not_crashing():
+    """The failure mode we want: no components, reported, not an exception."""
+    parsed = schema.parse_bill_of_materials(
+        {"ID": "box-1", "SomeUnexpectedKey": [{"ProductID": "s1", "Quantity": 24}]}
+    )
+    assert parsed is not None
+    assert parsed.components == ()
+
+
+def test_bom_drops_zero_quantity_components():
+    parsed = schema.parse_bill_of_materials(
+        {"ID": "box-1", "BOMComponents": [{"ProductID": "s1", "Quantity": 0}]}
+    )
+    assert parsed.components == ()
+
+
+# ---------------------------------------------------------------------------
+# Purchase orders
+# ---------------------------------------------------------------------------
+
+
+def test_parses_status_values():
+    assert schema.parse_status("AUTHORISED") is PurchaseStatus.AUTHORISED
+    assert schema.parse_status("AUTHORIZED") is PurchaseStatus.AUTHORISED
+    assert schema.parse_status("VOID") is PurchaseStatus.VOIDED
+    assert schema.parse_status("something else") is PurchaseStatus.UNKNOWN
+    assert schema.parse_status(None) is PurchaseStatus.UNKNOWN
+
+
+def test_parses_combined_status_strings():
+    """Cin7 list views combine statuses, e.g. 'AUTHORISED / PARTIALLY RECEIVED'."""
+    assert (
+        schema.parse_status("AUTHORISED / PARTIALLY RECEIVED")
+        is PurchaseStatus.AUTHORISED
+    )
+
+
+def test_per_line_received_quantity_is_used_when_present():
+    parsed = schema.parse_purchase(
+        {
+            "ID": "po-1",
+            "OrderStatus": "AUTHORISED",
+            "Location": "Main",
+            "Order": {
+                "Lines": [
+                    {
+                        "ProductID": "box-1",
+                        "SKU": "BOX",
+                        "Quantity": 10,
+                        "ReceivedQuantity": 4,
+                    }
+                ]
+            },
+        }
+    )
+    line = parsed.lines[0]
+    assert line.ordered_quantity == 10
+    assert line.received_quantity == 4
+    assert line.outstanding_quantity == 6
+
+
+def test_receipts_are_summed_across_partial_receipt_lines():
+    """Cin7 records partial receipts by appending stock-received lines.
+
+    A product can legitimately appear several times and must be summed, not
+    overwritten — otherwise only the last receipt counts and inbound reads
+    too high.
+    """
+    parsed = schema.parse_purchase(
+        {
+            "ID": "po-1",
+            "OrderStatus": "AUTHORISED",
+            "Location": "Main",
+            "Order": {"Lines": [{"ProductID": "box-1", "Quantity": 10}]},
+            "StockReceived": [
+                {"Lines": [{"ProductID": "box-1", "Quantity": 3}]},
+                {"Lines": [{"ProductID": "box-1", "Quantity": 1}]},
+            ],
+        }
+    )
+    line = parsed.lines[0]
+    assert line.received_quantity == 4
+    assert line.outstanding_quantity == 6
+
+
+def test_purchase_with_no_receipts_reads_as_nothing_received():
+    parsed = schema.parse_purchase(
+        {
+            "ID": "po-1",
+            "OrderStatus": "AUTHORISED",
+            "Location": "Main",
+            "Order": {"Lines": [{"ProductID": "box-1", "Quantity": 10}]},
+        }
+    )
+    assert parsed.lines[0].received_quantity == 0
+    assert parsed.lines[0].outstanding_quantity == 10
+
+
+def test_purchase_without_id_is_rejected():
+    assert schema.parse_purchase({"OrderStatus": "DRAFT"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Supplier attributes
+# ---------------------------------------------------------------------------
+
+
+def test_finds_attribute_in_a_name_value_list():
+    value = schema.extract_supplier_attribute(
+        {"AdditionalAttributes": [{"Name": "Auto Reorder", "Value": "Yes"}]},
+        "Auto Reorder",
+    )
+    assert value == "Yes"
+
+
+def test_finds_attribute_in_a_mapping():
+    value = schema.extract_supplier_attribute(
+        {"AdditionalAttributes": {"Auto Reorder": True}}, "Auto Reorder"
+    )
+    assert value is True
+
+
+def test_finds_attribute_as_a_flat_key():
+    value = schema.extract_supplier_attribute({"Auto Reorder": "yes"}, "Auto Reorder")
+    assert value == "yes"
+
+
+def test_missing_attribute_is_none_meaning_not_opted_in():
+    assert schema.extract_supplier_attribute({"Name": "Acme"}, "Auto Reorder") is None
+
+
+# ---------------------------------------------------------------------------
+# Reorder parameters
+# ---------------------------------------------------------------------------
+
+
+def test_parses_supplier_and_location_reorder_parameters():
+    parsed = schema.parse_reorder_parameters(
+        {
+            "ID": "prod-1",
+            "Suppliers": [
+                {
+                    "SupplierID": "sup-1",
+                    "Lead": 14,
+                    "Safety": 7,
+                    "ReorderQuantity": 2,
+                    "Locations": [
+                        {"Location": "Main", "Lead": 10, "Safety": 3, "ReorderQuantity": 4}
+                    ],
+                }
+            ],
+        }
+    )
+
+    supplier_level = [p for p in parsed if p.location is None][0]
+    assert supplier_level.lead_days == 14
+    assert supplier_level.safety_days == 7
+
+    location_level = [p for p in parsed if p.location == "Main"][0]
+    assert location_level.lead_days == 10
+    assert location_level.reorder_quantity == 4
+
+
+def test_product_without_suppliers_yields_nothing():
+    assert schema.parse_reorder_parameters({"ID": "prod-1"}) == []
