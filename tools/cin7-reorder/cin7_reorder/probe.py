@@ -102,6 +102,10 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
         if result.ok:
             working.append((version, path, result.payload))
             attempts.append(f"{label} → JSON")
+        elif "non-JSON" in result.detail:
+            # By far the common case — Cin7's "no such path" answer. Keep it
+            # short so the list stays readable when all eight fail.
+            attempts.append(f"{label} → no such path")
         else:
             attempts.append(f"{label} → {result.detail}")
 
