@@ -189,6 +189,44 @@ def test_purchase_without_id_is_rejected():
 # ---------------------------------------------------------------------------
 
 
+def test_reads_a_numbered_attribute_slot():
+    """The shape confirmed against a live account.
+
+    Cin7 returns AdditionalAttribute1..10 as flat fields; the readable label
+    lives in the attribute set definition, not on the supplier.
+    """
+    supplier = {"ID": "s1", "Name": "Acme", "AdditionalAttribute3": "Yes"}
+    assert schema.extract_supplier_attribute(supplier, "AdditionalAttribute3") == "Yes"
+
+
+def test_empty_slot_reads_as_none_not_a_value():
+    """Unset slots come back as empty strings.
+
+    Treating that as a value would opt every supplier into automation, which
+    is the exact failure the opt-in design exists to prevent.
+    """
+    supplier = {"ID": "s1", "AdditionalAttribute1": "", "AdditionalAttribute2": "   "}
+    assert schema.extract_supplier_attribute(supplier, "AdditionalAttribute1") is None
+    assert schema.extract_supplier_attribute(supplier, "AdditionalAttribute2") is None
+
+
+def test_lists_populated_slots_for_the_probe():
+    supplier = {
+        "ID": "s1",
+        "AdditionalAttribute1": "Yes",
+        "AdditionalAttribute2": "",
+        "AdditionalAttribute7": "weekly",
+    }
+    assert schema.supplier_attribute_slots(supplier) == {
+        "AdditionalAttribute1": "Yes",
+        "AdditionalAttribute7": "weekly",
+    }
+
+
+def test_no_populated_slots_is_an_empty_mapping():
+    assert schema.supplier_attribute_slots({"ID": "s1", "Name": "Acme"}) == {}
+
+
 def test_finds_attribute_in_a_name_value_list():
     value = schema.extract_supplier_attribute(
         {"AdditionalAttributes": [{"Name": "Auto Reorder", "Value": "Yes"}]},

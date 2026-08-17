@@ -7,22 +7,45 @@ Background and reasoning: [`docs/cin7-po-automation-feasibility.md`](../../docs/
 
 ---
 
-## Read this before running anything
+## Status against a real account
 
-**The API layer has never run against a real Cin7 account.** Cin7's API documentation was
-not reachable from the environment where this was written, so every response field name in
-[`cin7_reorder/schema.py`](cin7_reorder/schema.py) is an educated guess.
-
-What that means concretely:
+A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 126 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 150 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
-| **The field names — does Cin7 actually respond in these shapes?** | **Unverified. Run `probe`.** |
+| Authentication | ✅ Confirmed live |
+| Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
+| `MinimumBeforeReorder` / `ReorderQuantity` on products | ✅ Confirmed live |
+| Supplier attributes | ✅ Found — ten numbered slots, see below |
+| **Bill of materials endpoint** | ❌ **Not found at `v2/BillOfMaterials`.** Blocking |
+| Whether a draft purchase can be updated | Untested — needs a manual write |
 
-`probe` is the first command for a reason. Do not schedule `plan`, and certainly do not run
-`apply`, until it comes back clean.
+`probe` is still the first command to run. Do not schedule `plan`, and certainly do not run
+`apply`, until the BOM lookup works.
+
+### The BOM endpoint is the blocker
+
+`GET v2/BillOfMaterials` returns a 302 to an HTML error page, which is how Cin7 answers an
+unknown path. Without it there is no way to map a base SKU to the pack SKU that contains it,
+and that mapping is the whole point of this tool.
+
+`probe` now tries eight candidate paths across both API versions and reports which, if any,
+return JSON — so the next run should identify the right one rather than needing another guess.
+
+### Supplier attributes are numbered slots
+
+Cin7 returns `AdditionalAttribute1` … `AdditionalAttribute10` as flat fields, with the
+human-readable labels held in the attribute set definition rather than on the supplier. So the
+slot is named directly in config:
+
+```yaml
+suppliers:
+  attribute_field: AdditionalAttribute1
+```
+
+`probe` prints which slots hold values on each supplier, so you can match them by content.
 
 ---
 
@@ -204,7 +227,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-126 tests, offline, well under a second. The ones that matter most:
+150 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while

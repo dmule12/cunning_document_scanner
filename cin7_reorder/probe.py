@@ -67,43 +67,88 @@ def _probe_connectivity(client: Cin7Client) -> ProbeFinding:
     )
 
 
-def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
-    """GATING #1: does GET /BillOfMaterials return components with quantities?"""
-    question = "Does GET /BillOfMaterials return components with quantities?"
+#: Candidate locations for bill-of-materials data. Cin7 answers an unknown
+#: path with a 302 to an HTML error page rather than a 404, so each candidate
+#: is judged purely on whether it returns JSON.
+BOM_ENDPOINT_CANDIDATES = (
+    ("v2", "BillOfMaterials"),
+    ("v2", "billOfMaterials"),
+    ("v2", "bom"),
+    ("v2", "productBOM"),
+    ("v2", "product/bom"),
+    ("v1", "BillOfMaterials"),
+    ("v1", "billOfMaterials"),
+    ("v1", "bom"),
+)
 
-    try:
-        payload = client.get(
-            schema.ENDPOINT_BILL_OF_MATERIALS,
+
+def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
+    """GATING #1: where does bill-of-materials data live, and what shape is it?"""
+    question = "Can we read bills of materials (base SKU → pack SKU)?"
+
+    working: list[tuple[str, str, Any]] = []
+    attempts: list[str] = []
+
+    for version, path in BOM_ENDPOINT_CANDIDATES:
+        base = client.base_url_v1 if version == "v1" else None
+        result = client.try_get(
+            path,
+            base_url=base,
             page=1,
             limit=sample_size,
             onlyProductsWithBOM="true",
         )
-    except Cin7Error as exc:
+        label = f"{version}/{path}"
+        if result.ok:
+            working.append((version, path, result.payload))
+            attempts.append(f"{label} → JSON")
+        else:
+            attempts.append(f"{label} → {result.detail}")
+
+    if not working:
+        # Fall back to asking whether BOM data rides along on the product
+        # record instead of having its own endpoint.
+        product = client.try_get(schema.ENDPOINT_PRODUCT, page=1, limit=1)
+        product_keys: list[str] = []
+        if product.ok:
+            records = schema.extract_list(product.payload)
+            if records:
+                product_keys = sorted(records[0].keys())
+
         return ProbeFinding(
             question=question,
-            answer="ENDPOINT FAILED",
+            answer="NO WORKING ENDPOINT FOUND",
             ok=False,
-            detail=str(exc),
+            detail="Tried: " + "; ".join(attempts),
+            sample_keys=product_keys,
             fix=(
-                "Without this endpoint there is no way to map a base SKU to "
-                "its pack SKU. The whole design depends on it."
+                "None of the candidate paths returned JSON. Check the product "
+                "record keys above for anything BOM- or component-shaped — if "
+                "BOM data rides along on the product, the design changes from "
+                "a separate index build to reading it inline. Without a way to "
+                "map base SKU to pack SKU, nothing else works."
             ),
         )
 
+    version, path, payload = working[0]
     records = schema.extract_list(payload)
+    endpoint = f"{version}/{path}"
+
     if not records:
         return ProbeFinding(
             question=question,
-            answer="NO PRODUCTS WITH A BOM",
+            answer=f"ENDPOINT FOUND ({endpoint}) BUT EMPTY",
             ok=False,
             detail=(
-                "The endpoint responded but returned nothing. Either no "
-                "product has a BOM configured, or the onlyProductsWithBOM "
-                "filter is not being applied as expected."
+                f"{endpoint} returned JSON but no records. Either no product "
+                "has a BOM configured, or the onlyProductsWithBOM filter is "
+                "not applied as expected. Tried: " + "; ".join(attempts)
             ),
             fix=(
-                "Confirm in the Cin7 UI that your boxed products have an "
-                "additional unit of measure / BOM set up."
+                f"Set ENDPOINT_BILL_OF_MATERIALS to '{path}'"
+                + (" on the v1 base URL" if version == "v1" else "")
+                + ", then confirm in the Cin7 UI that your boxed products have "
+                "an additional unit of measure / BOM set up."
             ),
         )
 
@@ -114,17 +159,19 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
     if not with_components:
         return ProbeFinding(
             question=question,
-            answer="NO — components not found under the expected keys",
+            answer=f"ENDPOINT FOUND ({endpoint}) — components not parsed",
             ok=False,
             detail=(
                 f"Top-level keys on a BOM record: {sorted(sample.keys())}. "
-                "None of "
-                f"{list(schema.BOM_COMPONENT_KEYS)} held a component list."
+                f"None of {list(schema.BOM_COMPONENT_KEYS)} held a component "
+                "list."
             ),
             sample_keys=sorted(sample.keys()),
             fix=(
-                "Find the key holding the components in the output above and "
-                "add it to BOM_COMPONENT_KEYS in schema.py."
+                f"Point ENDPOINT_BILL_OF_MATERIALS at '{path}'"
+                + (" on the v1 base URL" if version == "v1" else "")
+                + ", and add the component key from the list above to "
+                "BOM_COMPONENT_KEYS in schema.py."
             ),
         )
 
@@ -132,7 +179,7 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
     first = example.components[0]
     return ProbeFinding(
         question=question,
-        answer="YES",
+        answer=f"YES — via {endpoint}",
         ok=True,
         detail=(
             f"{len(with_components)}/{len(records)} sampled BOMs parsed. "
@@ -140,6 +187,14 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
             f"{first.quantity:g} × {first.component_product_id}."
         ),
         sample_keys=sorted(sample.keys()),
+        fix=(
+            ""
+            if (version, path)
+            == ("v2", schema.ENDPOINT_BILL_OF_MATERIALS)
+            else f"Update ENDPOINT_BILL_OF_MATERIALS to '{path}'"
+            + (" on the v1 base URL" if version == "v1" else "")
+            + " in schema.py."
+        ),
     )
 
 
@@ -260,7 +315,14 @@ def _probe_draft_update(client: Cin7Client) -> ProbeFinding:
 
 
 def _probe_supplier_attributes(client: Cin7Client, sample_size: int) -> ProbeFinding:
-    question = "Do supplier additional attributes come back on GET /supplier?"
+    """Which attribute slot should the opt-in flag live in?
+
+    Cin7 exposes supplier attributes as ten opaque numbered slots. The
+    human-readable label lives in the attribute set definition rather than on
+    the supplier, so the only practical way to choose a slot is to see which
+    ones already hold values.
+    """
+    question = "Which supplier attribute slot holds the opt-in flag?"
 
     try:
         payload = client.get(schema.ENDPOINT_SUPPLIER, page=1, limit=sample_size)
@@ -275,30 +337,52 @@ def _probe_supplier_attributes(client: Cin7Client, sample_size: int) -> ProbeFin
             question=question, answer="NO SUPPLIERS RETURNED", ok=False
         )
 
-    sample = records[0]
-    container_present = any(
-        schema.get_first(r, *schema.SUPPLIER_ATTRIBUTE_CONTAINER_KEYS) is not None
-        for r in records
-    )
+    lines: list[str] = []
+    any_populated = False
+
+    for record in records:
+        name = schema.parse_supplier_name(record) or "(unnamed)"
+        attribute_set = schema.as_str(schema.get_first(record, "AttributeSet")) or "—"
+        slots = schema.supplier_attribute_slots(record)
+        if slots:
+            any_populated = True
+            rendered = ", ".join(f"{k}={v!r}" for k, v in slots.items())
+        else:
+            rendered = "no attribute slots populated"
+        lines.append(f"{name} [set: {attribute_set}]: {rendered}")
+
+    if not any_populated:
+        return ProbeFinding(
+            question=question,
+            answer="NO SLOTS POPULATED YET",
+            ok=None,
+            detail=(
+                "Supplier attribute slots exist but none of the sampled "
+                "suppliers has a value in any of them.\n        "
+                + "\n        ".join(lines)
+            ),
+            fix=(
+                "This is setup you still need to do, not a code problem. In "
+                "Cin7: Settings → Reference books → Other Items → Additional "
+                "Attributes, create an 'Auto Reorder' attribute in a set "
+                "applied to suppliers, then set it to Yes on the one supplier "
+                "you want automated. Re-run this probe and it will show which "
+                "numbered slot the value landed in; put that slot name in "
+                "`suppliers.attribute_field` in config.yaml.\n        "
+                "Until then, list supplier IDs under `suppliers.pin` instead."
+            ),
+        )
 
     return ProbeFinding(
         question=question,
-        answer="yes" if container_present else "NOT FOUND",
-        ok=container_present,
-        detail=(
-            f"Supplier record keys: {sorted(sample.keys())}."
-            if not container_present
-            else "An attributes container was present on at least one supplier."
-        ),
-        sample_keys=sorted(sample.keys()),
+        answer="SLOTS IN USE — pick the right one",
+        ok=True,
+        detail="\n        ".join(lines),
         fix=(
-            ""
-            if container_present
-            else (
-                "If attributes are absent, fall back to listing supplier IDs in "
-                "`suppliers.pin` in config.yaml instead of using the "
-                "'Auto Reorder' attribute."
-            )
+            "Put the slot holding your opt-in flag into "
+            "`suppliers.attribute_field` in config.yaml, e.g. "
+            "attribute_field: AdditionalAttribute1. The slot names are opaque, "
+            "so match them by the values shown above."
         ),
     )
 
