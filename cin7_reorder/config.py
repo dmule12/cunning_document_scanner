@@ -1,7 +1,8 @@
 """Configuration loading.
 
-Secrets come from the environment. Everything else comes from config.yaml.
-The two are kept strictly separate so that the config file stays committable.
+Secrets come from a ``.env`` file or the environment. Everything else comes
+from config.yaml. The two are kept strictly separate so that the config file
+stays committable and the secrets never are.
 """
 
 from __future__ import annotations
@@ -15,9 +16,58 @@ import yaml
 
 DEFAULT_BASE_URL = "https://inventory.dearsystems.com/ExternalApi/v2"
 
+#: Where to look for a .env file, in order. The package directory first so
+#: the tool works from any working directory, then the current directory.
+ENV_FILE_LOCATIONS = (
+    Path(__file__).resolve().parent.parent / ".env",
+    Path.cwd() / ".env",
+)
+
 
 class ConfigError(RuntimeError):
     """Configuration is missing or unusable."""
+
+
+def load_env_file(path: Optional[Path] = None) -> dict[str, str]:
+    """Read a ``.env`` file into a dict, without touching os.environ.
+
+    Deliberately small and dependency-free. Handles the three things that
+    actually trip people up when pasting credentials in: an ``export``
+    prefix copied from a shell snippet, surrounding quotes, and trailing
+    whitespace.
+
+    Real environment variables always win over the file, so CI secrets are
+    never shadowed by a stray .env left in a checkout.
+    """
+    candidates = [path] if path is not None else list(ENV_FILE_LOCATIONS)
+
+    values: dict[str, str] = {}
+    for candidate in candidates:
+        if candidate is None or not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :]
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            if key:
+                values.setdefault(key, value)
+
+        # First file found wins; don't merge across locations.
+        break
+
+    return values
 
 
 @dataclass(frozen=True)
@@ -27,9 +77,14 @@ class Credentials:
     base_url: str = DEFAULT_BASE_URL
 
     @classmethod
-    def from_env(cls) -> "Credentials":
-        account_id = os.environ.get("CIN7_ACCOUNT_ID", "").strip()
-        app_key = os.environ.get("CIN7_APP_KEY", "").strip()
+    def from_env(cls, env_file: Optional[Path] = None) -> "Credentials":
+        from_file = load_env_file(env_file)
+
+        def lookup(name: str) -> str:
+            return (os.environ.get(name) or from_file.get(name, "")).strip()
+
+        account_id = lookup("CIN7_ACCOUNT_ID")
+        app_key = lookup("CIN7_APP_KEY")
 
         missing = [
             name
@@ -40,16 +95,30 @@ class Credentials:
             if not value
         ]
         if missing:
+            # dict.fromkeys keeps order while dropping the duplicate you get
+            # when the working directory is the tool directory.
+            seen = dict.fromkeys(str(p) for p in ENV_FILE_LOCATIONS)
+            searched = "\n".join(f"    {p}" for p in seen)
             raise ConfigError(
-                "Missing required environment variable(s): "
+                "Missing credentials: "
                 + ", ".join(missing)
-                + ". Copy .env.example to .env and fill it in, or set them as CI secrets."
+                + ".\n\nProvide them either way:\n\n"
+                "  1. In a .env file — copy .env.example to .env and fill it in.\n"
+                "     Looked for one at:\n"
+                f"{searched}\n\n"
+                "  2. As environment variables:\n"
+                "       export CIN7_ACCOUNT_ID='...'\n"
+                "       export CIN7_APP_KEY='...'\n\n"
+                "Both are created on the Cin7 API setup page at\n"
+                "https://inventory.dearsystems.com/ExternalAPI"
             )
+
+        base_url = lookup("CIN7_BASE_URL") or DEFAULT_BASE_URL
 
         return cls(
             account_id=account_id,
             app_key=app_key,
-            base_url=os.environ.get("CIN7_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
+            base_url=base_url.rstrip("/"),
         )
 
 
