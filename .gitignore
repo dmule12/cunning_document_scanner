@@ -27,3 +27,13 @@
 .dart_tool/
 .packages
 build/
+
+# Python tooling under tools/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+tools/**/.env
+tools/**/state/

@@ -1,0 +1,92 @@
+# Cin7 reorder automation — runtime configuration.
+#
+# Secrets do NOT belong here. They come from the environment (see .env.example).
+
+# ---------------------------------------------------------------------------
+# Supplier scope
+# ---------------------------------------------------------------------------
+suppliers:
+  # Name of the additional attribute on the supplier record that opts a
+  # supplier into automation. Opt-in, never opt-out: a newly created supplier
+  # is automated only when someone deliberately sets this.
+  attribute_name: "Auto Reorder"
+
+  # Values of that attribute which count as "on" (compared case-insensitively).
+  truthy_values: ["yes", "true", "y", "1", "on", "enabled"]
+
+  # Rollout pin. While this list is non-empty, ONLY these suppliers are
+  # touched, regardless of how the attribute is set in Cin7. `apply` refuses
+  # to run with an empty pin unless --no-pin is passed explicitly.
+  #
+  # Put a single supplier ID here for the first live runs.
+  pin: []
+
+# ---------------------------------------------------------------------------
+# Locations
+# ---------------------------------------------------------------------------
+locations:
+  # Empty means every location. Otherwise a list of location names to include.
+  include: []
+
+# ---------------------------------------------------------------------------
+# Par levels
+#
+# Read from Cin7's own reorder parameters (lead days, safety days, reorder
+# quantity), set per supplier and per location on the product's Suppliers tab.
+#
+# Those three numbers do not contain a consumption rate, so a par level is
+# derived as:
+#
+#     par = daily_demand * (lead_days + safety_days)
+#
+# where daily_demand comes from sale history over `demand_window_days`.
+#
+# THIS IS THE LEAST-VERIFIED PART OF THE SYSTEM. See README, "Known unknowns".
+# ---------------------------------------------------------------------------
+par_levels:
+  demand_window_days: 90
+
+  # If a product has neither supplier-level nor location-level reorder
+  # parameters, Cin7 itself cannot generate a suggestion. We match that
+  # behaviour: skip and report.
+  skip_when_parameters_missing: true
+
+  # Floor on daily demand. Prevents a product with one sale in 90 days from
+  # producing a par level of essentially zero.
+  min_daily_demand: 0.0
+
+# ---------------------------------------------------------------------------
+# Safety caps
+#
+# Cheap insurance against a wrong BOM ratio or a stale par level. A line that
+# trips a cap is reported, not ordered.
+# ---------------------------------------------------------------------------
+safety:
+  # Reject any single line above this many units (boxes or base units).
+  max_line_quantity: 500
+
+  # Reject any line more than this multiple of the supplier's own reorder
+  # quantity. Set to null to disable.
+  max_reorder_quantity_multiple: 5
+
+  # Reject the entire run if it would create more than this many order lines.
+  # A sudden jump usually means a data problem, not a genuine restock.
+  max_total_lines: 400
+
+# ---------------------------------------------------------------------------
+# Minimum order quantities
+#
+# Cin7 has no documented MOQ field. Until one is confirmed, MOQs live here,
+# keyed by the SKU actually ordered (the box SKU, where one exists).
+# ---------------------------------------------------------------------------
+moq: {}
+  # BOX-SLV-24: 2
+
+# ---------------------------------------------------------------------------
+# API behaviour
+# ---------------------------------------------------------------------------
+api:
+  page_size: 500
+  # Abort the run rather than approach Cin7's 5000/day cap.
+  daily_call_budget: 4000
+  timeout_seconds: 60

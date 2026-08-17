@@ -1,0 +1,212 @@
+"""The run report.
+
+This is not decoration. Several behaviours in this tool are only safe
+*because* they are reported:
+
+* a product ordered as a base SKU because no pack was found is
+  indistinguishable from a missing BOM without a flag;
+* the inbound figure exists nowhere in Cin7's own UI, so if the script is
+  ever accused of over- or under-ordering, this report is the only evidence
+  available;
+* a draft left alone because a human edited it needs someone to reconcile it.
+
+Rendered as Markdown for humans and JSON for anything downstream.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from typing import Any
+
+from .models import LineFlag, RunResult, SkipReason
+
+_FLAG_LABEL = {
+    LineFlag.ORDERED_AS_BASE_UNIT: "base units — no pack SKU found",
+    LineFlag.CAP_EXCEEDED: "EXCEEDS SAFETY CAP",
+    LineFlag.MOQ_APPLIED: "raised to MOQ",
+}
+
+_SKIP_LABEL = {
+    SkipReason.MULTIPLE_BOM_PARENTS: "Multiple pack parents — BOM data needs fixing",
+    SkipReason.NO_REORDER_PARAMETERS: "No reorder parameters set in Cin7",
+    SkipReason.NO_SUPPLIER: "No supplier on the product",
+    SkipReason.SUPPLIER_NOT_OPTED_IN: "Supplier not opted in",
+    SkipReason.SUFFICIENT_STOCK: "Sufficient stock",
+}
+
+
+def render_markdown(result: RunResult, *, dry_run: bool) -> str:
+    lines: list[str] = []
+    mode = "PLAN (nothing written)" if dry_run else "APPLY"
+
+    lines.append(f"# Cin7 reorder run — {mode}")
+    lines.append("")
+
+    if result.aborted:
+        lines.append(f"> **RUN ABORTED:** {result.aborted}")
+        lines.append("")
+
+    # -- summary -----------------------------------------------------------
+    flagged = [ln for ln in result.lines if ln.flags]
+    capped = [ln for ln in result.lines if LineFlag.CAP_EXCEEDED in ln.flags]
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| | |")
+    lines.append("| --- | --- |")
+    lines.append(f"| Order lines | {len(result.lines)} |")
+    lines.append(f"| Lines needing a look | {len(flagged)} |")
+    lines.append(f"| Lines over a safety cap | {len(capped)} |")
+    lines.append(f"| Suppliers included | {len(result.suppliers_considered)} |")
+    lines.append(f"| Suppliers skipped | {len(result.suppliers_skipped)} |")
+    lines.append(f"| Drafts created | {len(result.drafts_created)} |")
+    lines.append(f"| Drafts updated | {len(result.drafts_updated)} |")
+    lines.append(f"| Drafts left alone | {len(result.drafts_left_alone)} |")
+    lines.append(f"| API calls | {result.api_calls} |")
+    lines.append("")
+
+    if capped:
+        lines.append(
+            f"> **{len(capped)} line(s) exceeded a safety cap.** These are usually a "
+            "wrong BOM ratio or a stale par level rather than a genuine restock. "
+            "Check them before sending anything."
+        )
+        lines.append("")
+
+    # -- warnings ----------------------------------------------------------
+    if result.warnings:
+        lines.append("## Warnings")
+        lines.append("")
+        for warning in result.warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+
+    # -- order lines -------------------------------------------------------
+    if result.lines:
+        lines.append("## Proposed order lines")
+        lines.append("")
+        lines.append(
+            "| Base SKU | Ordered as | Location | Par | On hand | Alloc | Inbound | Need | Pack | Qty | Notes |"
+        )
+        lines.append(
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+        )
+        for line in sorted(
+            result.lines, key=lambda ln: (ln.location, ln.base_sku)
+        ):
+            notes = ", ".join(_FLAG_LABEL.get(f, f.value) for f in line.flags)
+            pack = f"×{line.units_per_pack:g}" if line.is_pack else "—"
+            lines.append(
+                f"| {line.base_sku} "
+                f"| {line.order_sku} "
+                f"| {line.location} "
+                f"| {line.par:g} "
+                f"| {line.on_hand:g} "
+                f"| {line.allocated:g} "
+                f"| {line.inbound_base:g} "
+                f"| {line.need_base:g} "
+                f"| {pack} "
+                f"| **{line.quantity:g}** "
+                f"| {notes} |"
+            )
+        lines.append("")
+
+    # -- inbound provenance ------------------------------------------------
+    with_inbound = [ln for ln in result.lines if ln.inbound_base > 0]
+    if with_inbound:
+        lines.append("## Inbound stock, and where it came from")
+        lines.append("")
+        lines.append(
+            "Cin7 does not show inbound pack quantities against the base SKU, so "
+            "these figures were reconstructed from open purchase orders. This "
+            "table is the only place they can be audited."
+        )
+        lines.append("")
+        lines.append("| Base SKU | Location | Inbound (base units) | From POs |")
+        lines.append("| --- | --- | ---: | --- |")
+        for line in sorted(with_inbound, key=lambda ln: (ln.location, ln.base_sku)):
+            sources = ", ".join(line.inbound_sources) or "—"
+            lines.append(
+                f"| {line.base_sku} | {line.location} "
+                f"| {line.inbound_base:g} | {sources} |"
+            )
+        lines.append("")
+
+    # -- drafts ------------------------------------------------------------
+    if result.drafts_left_alone:
+        lines.append("## Drafts left alone")
+        lines.append("")
+        lines.append(
+            "These were not overwritten because they differ from what this tool "
+            "last wrote — someone has edited them. Reconcile by hand."
+        )
+        lines.append("")
+        for entry in result.drafts_left_alone:
+            lines.append(f"- {entry}")
+        lines.append("")
+
+    # -- skips that matter -------------------------------------------------
+    actionable = [
+        s for s in result.skipped if s.reason is not SkipReason.SUFFICIENT_STOCK
+    ]
+    if actionable:
+        lines.append("## Skipped — needs attention")
+        lines.append("")
+        lines.append("| SKU | Location | Reason | Detail |")
+        lines.append("| --- | --- | --- | --- |")
+        for skip in sorted(actionable, key=lambda s: (s.reason.value, s.base_sku)):
+            lines.append(
+                f"| {skip.base_sku} "
+                f"| {skip.location or '—'} "
+                f"| {_SKIP_LABEL.get(skip.reason, skip.reason.value)} "
+                f"| {skip.detail} |"
+            )
+        lines.append("")
+
+    sufficient = len(result.skipped) - len(actionable)
+    if sufficient:
+        lines.append(f"_{sufficient} product/location pair(s) had sufficient stock._")
+        lines.append("")
+
+    if result.suppliers_skipped:
+        lines.append("## Suppliers not automated")
+        lines.append("")
+        lines.append(", ".join(sorted(result.suppliers_skipped)))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_json(result: RunResult, *, dry_run: bool) -> str:
+    payload = {
+        "mode": "plan" if dry_run else "apply",
+        "aborted": result.aborted,
+        "api_calls": result.api_calls,
+        "warnings": result.warnings,
+        "suppliers_considered": result.suppliers_considered,
+        "suppliers_skipped": result.suppliers_skipped,
+        "drafts_created": result.drafts_created,
+        "drafts_updated": result.drafts_updated,
+        "drafts_left_alone": result.drafts_left_alone,
+        "lines": [_encode(line) for line in result.lines],
+        "skipped": [_encode(skip) for skip in result.skipped],
+    }
+    return json.dumps(payload, indent=2, default=_default)
+
+
+def _encode(obj: Any) -> Any:
+    if is_dataclass(obj):
+        return {k: _default(v) for k, v in asdict(obj).items()}
+    return _default(obj)
+
+
+def _default(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (list, tuple)):
+        return [_default(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _default(v) for k, v in value.items()}
+    return value

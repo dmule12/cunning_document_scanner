@@ -1,0 +1,28 @@
+[project]
+name = "cin7-reorder"
+version = "0.1.0"
+description = "Twice-weekly reorder automation for Cin7 Core: computes shortfalls on base SKUs and raises draft purchase orders against the box SKUs suppliers actually sell."
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+cin7-reorder = "cin7_reorder.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cin7_reorder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

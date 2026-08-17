@@ -1,0 +1,7 @@
+# Files excluded from the published pub.dev package.
+#
+# The Flutter plugin lives in lib/, android/ and ios/. Everything below is
+# repo tooling and documentation that consumers of the package don't need.
+
+tools/
+docs/
