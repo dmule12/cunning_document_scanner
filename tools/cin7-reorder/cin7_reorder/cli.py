@@ -25,6 +25,7 @@ import typer
 
 from .client import Cin7Client
 from .config import Config, ConfigError, Credentials
+from .dump import find_product, render
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
 from .report import render_json, render_markdown
@@ -80,6 +81,48 @@ def probe(
 
     if any(f.ok is False for f in findings):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def dump(
+    sku: Optional[str] = typer.Option(None, "--sku", help="Product SKU to look up."),
+    product_id: Optional[str] = typer.Option(
+        None, "--id", help="Product ID (GUID) to look up."
+    ),
+    keys_only: bool = typer.Option(
+        False,
+        "--keys-only",
+        help="Show field names and the interesting values only, not the full record.",
+    ),
+    config_path: Optional[Path] = typer.Option(None, "--config"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Print one product record, to see what fields Cin7 actually returns.
+
+    Read-only. Use this when a probe check fails and the question is "what
+    shape is the data really in?" — particularly for working out whether a
+    pack SKU records what base units it contains.
+    """
+    if not sku and not product_id:
+        typer.secho("Give either --sku or --id.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    _setup_logging(verbose)
+    credentials, config = _load(config_path)
+
+    with Cin7Client(credentials, config.api, read_only=True) as client:
+        record, notes = find_product(client, sku=sku, product_id=product_id)
+
+        if record is None:
+            typer.secho(
+                "No product found.\n" + "\n".join(f"  {n}" for n in notes),
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        typer.echo(render(record, notes, keys_only=keys_only))
+        typer.echo(f"API calls used: {client.call_count}")
 
 
 @app.command()
