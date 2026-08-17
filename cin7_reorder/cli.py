@@ -16,6 +16,7 @@ Safety posture, deliberately awkward in the right places:
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -23,9 +24,16 @@ from typing import Optional
 
 import typer
 
+from . import schema
 from .client import Cin7Client
 from .config import Config, ConfigError, Credentials
-from .dump import find_product, find_products_with_bom, render
+from .dump import (
+    compare_list_and_detail,
+    fetch_detail,
+    find_product,
+    find_products_with_bom,
+    render,
+)
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
 from .report import render_json, render_markdown
@@ -138,8 +146,42 @@ def dump(
                 f"\nFound {len(records)} product(s) with a bill of materials "
                 f"({'; '.join(notes)})."
             )
+            typer.echo(
+                "\nThe list endpoint empties nested collections, so each one is "
+                "re-fetched by ID to see the real contents.\n"
+            )
+
             for record in records:
-                typer.echo(render(record, [], keys_only=keys_only))
+                product_id = schema.as_str(schema.get_first(record, "ID"))
+                detail = fetch_detail(client, product_id) if product_id else None
+
+                typer.echo("=" * 78)
+                typer.echo(
+                    f"{schema.as_str(schema.get_first(record, 'SKU'))} — "
+                    f"{schema.as_str(schema.get_first(record, 'Name'))}"
+                )
+                typer.echo("=" * 78)
+                for line in compare_list_and_detail(record, detail):
+                    typer.echo(line)
+                typer.echo("")
+
+                if detail is not None:
+                    components = schema.get_first(
+                        detail, *schema.BOM_COMPONENT_KEYS, default=[]
+                    )
+                    if isinstance(components, list) and components:
+                        typer.echo("  Components:")
+                        for component in components:
+                            typer.echo(f"    {json.dumps(component, default=str)}")
+                    else:
+                        typer.echo(
+                            "  Components: STILL EMPTY after the detail fetch."
+                        )
+                    typer.echo("")
+                    typer.echo(
+                        render(detail, ["from detail fetch"], keys_only=keys_only)
+                    )
+
             typer.echo(f"API calls used: {client.call_count}")
             return
 

@@ -101,6 +101,48 @@ def find_product(
     return None, notes
 
 
+def fetch_detail(client: Cin7Client, product_id: str) -> Optional[dict]:
+    """Fetch one product by ID.
+
+    The list endpoint returns scalar fields but empties nested collections —
+    ``BillOfMaterialsProducts``, ``ReorderLevels`` and ``Suppliers`` all come
+    back as ``[]`` there even when populated. Detail is the only way to see
+    them.
+    """
+    result = client.try_get(schema.ENDPOINT_PRODUCT, ID=product_id)
+    if not result.ok:
+        return None
+
+    records = schema.extract_list(result.payload)
+    if records:
+        return records[0]
+    if isinstance(result.payload, dict) and schema.get_first(result.payload, "ID"):
+        return result.payload
+    return None
+
+
+def compare_list_and_detail(list_record: dict, detail: Optional[dict]) -> list[str]:
+    """Report which nested collections the detail call filled in."""
+    if detail is None:
+        return ["  detail fetch FAILED — could not retrieve this product by ID"]
+
+    notes = []
+    for key in ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers"):
+        in_list = list_record.get(key)
+        in_detail = detail.get(key)
+        list_n = len(in_list) if isinstance(in_list, list) else "?"
+        detail_n = len(in_detail) if isinstance(in_detail, list) else "?"
+        verdict = (
+            "FILLED IN BY DETAIL"
+            if (detail_n or 0) > (list_n or 0)
+            else "still empty"
+            if not detail_n
+            else "same"
+        )
+        notes.append(f"  {key}: list={list_n}, detail={detail_n}  → {verdict}")
+    return notes
+
+
 def find_products_with_bom(
     client: Cin7Client, *, max_pages: int = 20, wanted: int = 3
 ) -> tuple[list[dict], int, list[str]]:
