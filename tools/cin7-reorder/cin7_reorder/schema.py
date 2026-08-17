@@ -191,10 +191,43 @@ def parse_availability(payload: Mapping[str, Any]) -> Optional[Availability]:
 # Bills of materials
 # ---------------------------------------------------------------------------
 
-#: GATING UNKNOWN #1. Whether components come back on ``GET`` at all, and
-#: under which key, is unverified. ``BOMComponents`` is documented for the
-#: ``PUT`` response, so it is the best available guess for ``GET``.
-BOM_COMPONENT_KEYS = ("BOMComponents", "BillOfMaterialsComponents", "Components")
+#: RESOLVED against a live account: bills of materials are not a separate
+#: endpoint. Every product record carries its own, under
+#: ``BillOfMaterialsProducts``, alongside ``BillOfMaterial`` (a boolean) and
+#: ``BOMType``. Earlier revisions hunted for a /BillOfMaterials endpoint that
+#: does not exist.
+BOM_COMPONENT_KEYS = (
+    "BillOfMaterialsProducts",
+    "BOMComponents",
+    "BillOfMaterialsComponents",
+    "Components",
+)
+
+#: Flags on the product record marking it as an assembly/pack.
+BOM_FLAG_KEYS = ("BillOfMaterial", "IsBillOfMaterial")
+BOM_TYPE_KEYS = ("BOMType", "BillOfMaterialType")
+
+#: ``BOMType`` values meaning "no bill of materials".
+BOM_TYPE_NONE = {"", "none", "null"}
+
+
+def product_has_bom(payload: Mapping[str, Any]) -> bool:
+    """Whether a product record carries a usable bill of materials.
+
+    Checks the components list rather than trusting the flags alone: a
+    product can be marked as an assembly while its component list is empty,
+    and an empty BOM is no use for mapping a pack to its base units.
+    """
+    components = get_first(payload, *BOM_COMPONENT_KEYS)
+    if isinstance(components, list) and components:
+        return True
+
+    flag = get_first(payload, *BOM_FLAG_KEYS)
+    if flag is True:
+        return True
+
+    bom_type = (as_str(get_first(payload, *BOM_TYPE_KEYS)) or "").strip().lower()
+    return bool(bom_type) and bom_type not in BOM_TYPE_NONE
 
 
 def parse_bill_of_materials(

@@ -62,6 +62,56 @@ def test_as_optional_float_keeps_absent_distinct_from_zero():
 # ---------------------------------------------------------------------------
 
 
+def test_parses_bom_from_a_product_record():
+    """The shape confirmed against a live account.
+
+    There is no /BillOfMaterials endpoint; every product carries its own
+    under BillOfMaterialsProducts.
+    """
+    product = {
+        "ID": "box-1",
+        "SKU": "DW400-BOX",
+        "BillOfMaterial": True,
+        "BOMType": "Assembly",
+        "BillOfMaterialsProducts": [{"ProductID": "sleeve-1", "Quantity": 24}],
+    }
+    assert schema.product_has_bom(product) is True
+
+    parsed = schema.parse_bill_of_materials(product)
+    assert parsed.parent_product_id == "box-1"
+    assert parsed.components[0].component_product_id == "sleeve-1"
+    assert parsed.components[0].quantity == 24
+
+
+def test_product_without_a_bom_is_recognised():
+    """The common case: BOMType None, empty component lists."""
+    product = {
+        "ID": "p1",
+        "BOMType": "None",
+        "BillOfMaterial": False,
+        "BillOfMaterialsProducts": [],
+        "BillOfMaterialsServices": [],
+    }
+    assert schema.product_has_bom(product) is False
+
+
+def test_bom_flag_without_components_still_counts_as_having_one():
+    """Worth surfacing rather than silently ignoring: the product is marked
+    as an assembly, so an empty component list is a data problem."""
+    assert schema.product_has_bom({"ID": "p1", "BillOfMaterial": True}) is True
+
+
+def test_populated_components_win_over_a_false_flag():
+    """Trust the data over the flag; an empty BOM is useless either way."""
+    product = {
+        "ID": "p1",
+        "BillOfMaterial": False,
+        "BOMType": "None",
+        "BillOfMaterialsProducts": [{"ProductID": "c1", "Quantity": 6}],
+    }
+    assert schema.product_has_bom(product) is True
+
+
 def test_parses_bom_components():
     parsed = schema.parse_bill_of_materials(
         {
