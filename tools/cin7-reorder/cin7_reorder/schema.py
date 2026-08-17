@@ -238,9 +238,16 @@ def parse_bill_of_materials(
 # Suppliers
 # ---------------------------------------------------------------------------
 
-#: Where additional attributes hang off a supplier record. Unverified: the
-#: attributes feature is documented for suppliers, but its API representation
-#: is not.
+#: Cin7 exposes supplier additional attributes as ten flat numbered slots —
+#: ``AdditionalAttribute1`` .. ``AdditionalAttribute10`` — alongside an
+#: ``AttributeSet`` naming which set is in use. Confirmed against a live
+#: account. The human-readable name of each slot lives in the attribute set
+#: definition, not on the supplier record, so a slot cannot be resolved from
+#: a name without a second lookup; config names the slot directly instead.
+SUPPLIER_ATTRIBUTE_SLOTS = tuple(f"AdditionalAttribute{n}" for n in range(1, 11))
+
+#: Older/alternative shapes, kept as a fallback in case some accounts or API
+#: versions nest attributes instead.
 SUPPLIER_ATTRIBUTE_CONTAINER_KEYS = (
     "AdditionalAttributes",
     "Attributes",
@@ -259,15 +266,22 @@ def parse_supplier_name(payload: Mapping[str, Any]) -> Optional[str]:
 def extract_supplier_attribute(
     payload: Mapping[str, Any], attribute_name: str
 ) -> Any:
-    """Find a named additional attribute on a supplier record.
+    """Read an additional attribute from a supplier record.
 
-    Handles the three shapes Cin7 plausibly uses:
+    ``attribute_name`` may be either a slot name (``AdditionalAttribute1``),
+    which is how Cin7 actually exposes these, or a human-readable label for
+    the nested shapes some accounts may use.
 
-      * a nested list of ``{"Name": ..., "Value": ...}`` objects,
-      * a nested mapping of name to value,
-      * a flat key on the supplier itself.
+    Returns ``None`` when absent or blank. Blank matters: an unset slot comes
+    back as an empty string, and treating that as a value would opt every
+    supplier into automation.
     """
     wanted = attribute_name.strip().lower()
+
+    # The shape confirmed against a live account: a flat numbered slot.
+    for slot in SUPPLIER_ATTRIBUTE_SLOTS:
+        if slot.lower() == wanted:
+            return _blank_to_none(get_first(payload, slot))
 
     container = get_first(payload, *SUPPLIER_ATTRIBUTE_CONTAINER_KEYS)
 
@@ -277,19 +291,44 @@ def extract_supplier_attribute(
                 continue
             name = as_str(get_first(entry, "Name", "AttributeName", "Key"))
             if name and name.strip().lower() == wanted:
-                return get_first(entry, "Value", "AttributeValue", "Val")
+                return _blank_to_none(
+                    get_first(entry, "Value", "AttributeValue", "Val")
+                )
 
     if isinstance(container, Mapping):
         for key, value in container.items():
             if str(key).strip().lower() == wanted:
-                return value
+                return _blank_to_none(value)
 
-    # Flat attribute directly on the supplier record.
+    # Flat attribute directly on the supplier record, by label.
     for key, value in payload.items():
         if str(key).strip().lower() == wanted:
-            return value
+            return _blank_to_none(value)
 
     return None
+
+
+def supplier_attribute_slots(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Every populated attribute slot on a supplier, for the probe to show.
+
+    The slot names are opaque (``AdditionalAttribute3``), so seeing which
+    ones hold values is the only practical way to work out which slot to
+    point the config at.
+    """
+    found: dict[str, str] = {}
+    for slot in SUPPLIER_ATTRIBUTE_SLOTS:
+        value = _blank_to_none(get_first(payload, slot))
+        if value is not None:
+            found[slot] = str(value)
+    return found
+
+
+def _blank_to_none(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------

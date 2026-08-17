@@ -124,9 +124,20 @@ class Credentials:
 
 @dataclass(frozen=True)
 class SupplierConfig:
+    #: Human-readable attribute label, used only by nested attribute shapes.
     attribute_name: str = "Auto Reorder"
+    #: The slot Cin7 actually stores it in, e.g. "AdditionalAttribute1".
+    #: Cin7 exposes supplier attributes as ten opaque numbered fields and
+    #: keeps the labels in the attribute set definition, so the slot has to
+    #: be named directly. Run `probe` to see which slots hold values.
+    attribute_field: Optional[str] = None
     truthy_values: tuple[str, ...] = ("yes", "true", "y", "1", "on", "enabled")
     pin: tuple[str, ...] = ()
+
+    @property
+    def lookup_key(self) -> str:
+        """What to actually read off the supplier record."""
+        return self.attribute_field or self.attribute_name
 
     def is_opted_in(self, attribute_value: Any) -> bool:
         if attribute_value is None:
@@ -189,6 +200,7 @@ class Config:
 
         suppliers = SupplierConfig(
             attribute_name=suppliers_raw.get("attribute_name", "Auto Reorder"),
+            attribute_field=suppliers_raw.get("attribute_field") or None,
             truthy_values=tuple(
                 suppliers_raw.get("truthy_values")
                 or ("yes", "true", "y", "1", "on", "enabled")

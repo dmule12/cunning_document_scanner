@@ -52,6 +52,17 @@ class ReadOnlyViolation(Cin7Error):
 
 
 @dataclass
+class ProbeResult:
+    """Outcome of a single candidate-endpoint request."""
+
+    path: str
+    ok: bool
+    status: Optional[int] = None
+    payload: Any = None
+    detail: str = ""
+
+
+@dataclass
 class _RateLimiter:
     """Token bucket honouring both the per-second and per-minute limits."""
 
@@ -124,6 +135,59 @@ class Cin7Client:
             timeout=self.config.timeout_seconds,
             transport=transport,
         )
+
+    # -- endpoint discovery ------------------------------------------------
+
+    def try_get(
+        self, path: str, *, base_url: Optional[str] = None, **params: Any
+    ) -> "ProbeResult":
+        """A GET that reports what happened instead of raising.
+
+        Used only by ``probe``, to test candidate endpoint paths without a
+        single 404 aborting the whole investigation. Cin7 answers an unknown
+        path with a 302 to an HTML error page rather than a clean 404, so
+        "did this return JSON" is the only reliable success test.
+        """
+        url = path if base_url is None else f"{base_url.rstrip('/')}/{path}"
+
+        self._limiter.acquire()
+        self.call_count += 1
+
+        try:
+            response = self._client.get(url, params=_clean(params))
+        except httpx.TransportError as exc:
+            return ProbeResult(path=url, ok=False, detail=f"transport error: {exc}")
+
+        if response.status_code >= 400:
+            return ProbeResult(
+                path=url, ok=False, status=response.status_code, detail="HTTP error"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return ProbeResult(
+                path=url,
+                ok=False,
+                status=response.status_code,
+                detail="non-JSON body (Cin7 redirects unknown paths to an HTML error page)",
+            )
+
+        return ProbeResult(
+            path=url, ok=True, status=response.status_code, payload=payload
+        )
+
+    @property
+    def base_url_v1(self) -> str:
+        """The v1 base, derived from the configured v2 base.
+
+        Some resources exist only on the older API version, so the tool has
+        to be able to reach both.
+        """
+        base = self.credentials.base_url.rstrip("/")
+        if base.endswith("/v2"):
+            return base[: -len("/v2")]
+        return base
 
     # -- lifecycle ---------------------------------------------------------
 

@@ -151,7 +151,7 @@ class Pipeline:
                 continue
 
             value = schema.extract_supplier_attribute(
-                record, self.config.suppliers.attribute_name
+                record, self.config.suppliers.lookup_key
             )
             if self.config.suppliers.is_opted_in(value):
                 opted_in[supplier_id] = name

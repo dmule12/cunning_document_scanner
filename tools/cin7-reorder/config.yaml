@@ -6,9 +6,19 @@
 # Supplier scope
 # ---------------------------------------------------------------------------
 suppliers:
-  # Name of the additional attribute on the supplier record that opts a
-  # supplier into automation. Opt-in, never opt-out: a newly created supplier
-  # is automated only when someone deliberately sets this.
+  # Which attribute on the supplier record opts a supplier into automation.
+  # Opt-in, never opt-out: a newly created supplier is automated only when
+  # someone deliberately sets this.
+  #
+  # Cin7 stores supplier attributes in ten opaque numbered slots
+  # (AdditionalAttribute1 .. AdditionalAttribute10) and keeps the readable
+  # labels in the attribute set definition, not on the supplier. So the slot
+  # has to be named here directly.
+  #
+  # Run `probe` — it prints which slots hold values on your suppliers.
+  attribute_field: null      # e.g. "AdditionalAttribute1"
+
+  # Only used by nested attribute shapes, which this account does not use.
   attribute_name: "Auto Reorder"
 
   # Values of that attribute which count as "on" (compared case-insensitively).
