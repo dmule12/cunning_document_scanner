@@ -34,11 +34,13 @@ INTERESTING_FRAGMENTS = (
     "measure",
     "assembl",
     "pack",
+    "carton",
     "family",
     "parent",
     "child",
     "conversion",
-    "child",
+    "reorder",
+    "quantitytoproduce",
 )
 
 
@@ -57,7 +59,7 @@ def find_product(
         attempts.append(("Name", {"Name": sku}))
 
     for label, params in attempts:
-        result = client.try_get(schema.ENDPOINT_PRODUCT, page=1, limit=5, **params)
+        result = client.try_get(schema.ENDPOINT_PRODUCT, page=1, limit=20, **params)
         if not result.ok:
             notes.append(f"lookup by {label}: {result.detail}")
             continue
@@ -68,18 +70,76 @@ def find_product(
             if schema.get_first(result.payload, "ID", "ProductID"):
                 records = [result.payload]
 
-        if records:
-            notes.append(f"lookup by {label}: {len(records)} record(s)")
-            # Prefer an exact SKU match when the query was fuzzy.
-            if sku:
-                for record in records:
-                    if (schema.as_str(schema.get_first(record, "SKU")) or "").upper() == sku.upper():
-                        return record, notes
-            return records[0], notes
+        if not records:
+            notes.append(f"lookup by {label}: no records")
+            continue
 
-        notes.append(f"lookup by {label}: no records")
+        if sku:
+            exact = [
+                r
+                for r in records
+                if (schema.as_str(schema.get_first(r, "SKU")) or "").upper()
+                == sku.upper()
+            ]
+            if exact:
+                notes.append(f"lookup by {label}: exact SKU match")
+                return exact[0], notes
+
+            # Cin7 ignores query parameters it does not recognise and returns
+            # an unfiltered page instead. Returning the first row here would
+            # present an unrelated product as though it were the one asked
+            # for — which is worse than finding nothing.
+            notes.append(
+                f"lookup by {label}: {len(records)} record(s) but none matched "
+                f"SKU {sku!r} — filter appears to have been ignored"
+            )
+            continue
+
+        notes.append(f"lookup by {label}: {len(records)} record(s)")
+        return records[0], notes
 
     return None, notes
+
+
+def find_products_with_bom(
+    client: Cin7Client, *, max_pages: int = 20, wanted: int = 3
+) -> tuple[list[dict], int, list[str]]:
+    """Page the catalogue looking for products that carry a bill of materials.
+
+    More useful than a SKU lookup when the goal is "show me a real pack
+    product": it finds them by structure rather than by guessing a code, and
+    it reports how many were scanned so an empty result is unambiguous.
+    """
+    found: list[dict] = []
+    scanned = 0
+    notes: list[str] = []
+
+    for page in range(1, max_pages + 1):
+        result = client.try_get(schema.ENDPOINT_PRODUCT, page=page, limit=500)
+        if not result.ok:
+            notes.append(f"page {page}: {result.detail}")
+            break
+
+        records = schema.extract_list(result.payload)
+        if not records:
+            break
+
+        scanned += len(records)
+
+        for record in records:
+            if schema.product_has_bom(record):
+                found.append(record)
+                if len(found) >= wanted:
+                    notes.append(
+                        f"scanned {scanned} product(s) across {page} page(s)"
+                    )
+                    return found, scanned, notes
+
+        if len(records) < 500:
+            break
+
+    notes.append(f"scanned {scanned} product(s)")
+    return found, scanned, notes
 
 
 def interesting_keys(record: dict) -> list[str]:

@@ -25,7 +25,7 @@ import typer
 
 from .client import Cin7Client
 from .config import Config, ConfigError, Credentials
-from .dump import find_product, render
+from .dump import find_product, find_products_with_bom, render
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
 from .report import render_json, render_markdown
@@ -89,6 +89,11 @@ def dump(
     product_id: Optional[str] = typer.Option(
         None, "--id", help="Product ID (GUID) to look up."
     ),
+    with_bom: bool = typer.Option(
+        False,
+        "--with-bom",
+        help="Find products that carry a bill of materials, instead of by SKU.",
+    ),
     keys_only: bool = typer.Option(
         False,
         "--keys-only",
@@ -97,20 +102,47 @@ def dump(
     config_path: Optional[Path] = typer.Option(None, "--config"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Print one product record, to see what fields Cin7 actually returns.
+    """Print product records, to see what Cin7 actually returns.
 
-    Read-only. Use this when a probe check fails and the question is "what
-    shape is the data really in?" — particularly for working out whether a
-    pack SKU records what base units it contains.
+    Read-only. ``--with-bom`` searches the catalogue for products that carry
+    a bill of materials, which is more reliable than guessing a SKU when the
+    question is "show me a real pack product".
     """
-    if not sku and not product_id:
-        typer.secho("Give either --sku or --id.", fg=typer.colors.RED, err=True)
+    if not sku and not product_id and not with_bom:
+        typer.secho(
+            "Give --sku, --id, or --with-bom.", fg=typer.colors.RED, err=True
+        )
         raise typer.Exit(code=2)
 
     _setup_logging(verbose)
     credentials, config = _load(config_path)
 
     with Cin7Client(credentials, config.api, read_only=True) as client:
+        if with_bom:
+            records, scanned, notes = find_products_with_bom(client)
+
+            if not records:
+                typer.secho(
+                    f"\nNo product in the catalogue carries a bill of materials "
+                    f"({'; '.join(notes)}).\n\n"
+                    "That means Cin7 is not recording that a pack contains any "
+                    "number of base units — so no API call can supply that "
+                    "mapping. The options are to configure Additional Units of "
+                    "Measure on your pack products in Cin7, or to supply the "
+                    "mapping from a config file.\n",
+                    fg=typer.colors.YELLOW,
+                )
+                raise typer.Exit(code=1)
+
+            typer.echo(
+                f"\nFound {len(records)} product(s) with a bill of materials "
+                f"({'; '.join(notes)})."
+            )
+            for record in records:
+                typer.echo(render(record, [], keys_only=keys_only))
+            typer.echo(f"API calls used: {client.call_count}")
+            return
+
         record, notes = find_product(client, sku=sku, product_id=product_id)
 
         if record is None:

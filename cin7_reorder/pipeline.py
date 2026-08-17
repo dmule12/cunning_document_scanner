@@ -39,6 +39,7 @@ from .drafts import (
 from .inbound import reconstruct
 from .models import (
     Availability,
+    BillOfMaterials,
     Product,
     PurchaseOrder,
     PurchaseStatus,
@@ -85,8 +86,8 @@ class Pipeline:
             )
             return
 
-        products, reorder_params = self._load_products()
-        bom = self._load_bom(result)
+        products, reorder_params, boms = self._load_products()
+        bom = self._build_bom_index(boms, result)
         availability = self._load_availability()
         purchases = self._load_purchases()
 
@@ -163,45 +164,63 @@ class Pipeline:
 
     def _load_products(
         self,
-    ) -> tuple[dict[str, Product], dict[str, list[ReorderParameters]]]:
+    ) -> tuple[
+        dict[str, Product],
+        dict[str, list[ReorderParameters]],
+        list[BillOfMaterials],
+    ]:
+        """One pass over the catalogue, yielding everything it carries.
+
+        Bills of materials live on the product record rather than at their
+        own endpoint, so products, reorder points and BOMs all come from the
+        same paged read. Confirmed against a live account, where every
+        candidate /BillOfMaterials path returned Cin7's not-found redirect.
+        """
         products: dict[str, Product] = {}
         params: dict[str, list[ReorderParameters]] = {}
+        boms: list[BillOfMaterials] = []
 
         for record in self.client.paginate(schema.ENDPOINT_PRODUCT):
             product = schema.parse_product(record)
             if product is None:
                 continue
             products[product.id] = product
+
             parsed = schema.parse_reorder_parameters(record)
             if parsed:
                 params[product.id] = parsed
 
-        return products, params
+            if schema.product_has_bom(record):
+                bom = schema.parse_bill_of_materials(record)
+                if bom is not None and bom.components:
+                    boms.append(bom)
 
-    def _load_bom(self, result: RunResult) -> BomIndex:
-        boms = []
-        for record in self.client.paginate(
-            schema.ENDPOINT_BILL_OF_MATERIALS,
-            onlyProductsWithBOM="true",
-        ):
-            parsed = schema.parse_bill_of_materials(record)
-            if parsed is not None:
-                boms.append(parsed)
+        return products, params, boms
 
+    def _build_bom_index(
+        self, boms: list[BillOfMaterials], result: RunResult
+    ) -> BomIndex:
         index = BomIndex.build(boms)
 
-        if not index.link_count and boms:
+        if not boms:
             result.warnings.append(
-                f"{len(boms)} BOM record(s) were returned but none yielded a "
-                "usable component link. The component key in schema.py is "
-                "probably wrong — run `probe`. Every product will be ordered "
-                "as base units until this is fixed."
+                "No product carries a bill of materials, so no pack SKU can be "
+                "resolved and everything falls back to base units. Either no "
+                "product has one configured in Cin7, or the component key in "
+                "schema.py is wrong — run `dump --with-bom` to tell which."
             )
-        elif not boms:
+        elif not index.link_count:
             result.warnings.append(
-                "No bills of materials were returned. Without them, pack SKUs "
-                "cannot be resolved and everything falls back to base units. "
-                "Run `probe`."
+                f"{len(boms)} product(s) carry a bill of materials but none "
+                "yielded a usable component link. Every product will be "
+                "ordered as base units until this is fixed."
+            )
+
+        for conflict in index.conflicts:
+            result.warnings.append(
+                f"Product {conflict.base_product_id} is a component of "
+                f"{len(conflict.pack_product_ids)} packs; it will be skipped "
+                "until the BOM data is corrected."
             )
 
         return index

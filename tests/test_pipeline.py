@@ -58,12 +58,20 @@ def _products() -> list[dict]:
             "ReorderQuantity": 10,
         },
         {
+            # The pack SKU carries its own bill of materials, which is how
+            # Cin7 actually exposes it — there is no separate endpoint.
             "ID": BOX,
             "SKU": "BOX-024",
             "Name": "Box of 24",
             "DefaultSupplierID": SUPPLIER_ON,
             "MinimumBeforeReorder": 5,
             "ReorderQuantity": 5,
+            "BillOfMaterial": True,
+            "BOMType": "Assembly",
+            "AutoDisassembly": True,
+            "BillOfMaterialsProducts": [
+                {"ProductID": SLEEVE, "Quantity": 24}
+            ],
         },
         {
             "ID": "prod-other",
@@ -102,9 +110,12 @@ def handler(request: httpx.Request) -> httpx.Response:
         return page1("Products", _products())
 
     if path == "BillOfMaterials":
-        return page1(
-            "BillOfMaterials",
-            [{"ID": BOX, "BOMComponents": [{"ProductID": SLEEVE, "Quantity": 24}]}],
+        # Cin7 has no such endpoint — every candidate path returns a redirect
+        # to an HTML error page. Reproduced here so a regression that starts
+        # calling it again fails loudly rather than silently finding nothing.
+        return httpx.Response(
+            200,
+            text="<html><body>Object moved to <a href='/Error/NotFound'>here</a>.</body></html>",
         )
 
     if path == "productAvailability":

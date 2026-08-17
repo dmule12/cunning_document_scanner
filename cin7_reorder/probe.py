@@ -87,123 +87,95 @@ BOM_ENDPOINT_CANDIDATES = (
 BOM_FILTER_PARAMS = {"onlyProductsWithBOM": "true"}
 
 
+#: How many pages of products to scan looking for one with a BOM. The whole
+#: catalogue would be more thorough but this is a diagnostic, not a run.
+BOM_SCAN_PAGES = 10
+
+
 def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
-    """GATING #1: where does bill-of-materials data live, and what shape is it?"""
-    question = "Can we read bills of materials (base SKU → pack SKU)?"
+    """Can a pack SKU be mapped to the base units it contains?
 
-    working: list[tuple[str, str, Any]] = []
-    attempts: list[str] = []
+    Bills of materials live on the product record, not at their own
+    endpoint — every candidate /BillOfMaterials path returns Cin7's
+    not-found redirect. So this scans the catalogue for products carrying a
+    BOM rather than calling a dedicated endpoint.
+    """
+    question = "Can we map a pack SKU to its base units?"
 
-    for filtered in (True, False):
-        for version, path in BOM_ENDPOINT_CANDIDATES:
-            base = client.base_url_v1 if version == "v1" else None
-            extra = dict(BOM_FILTER_PARAMS) if filtered else {}
-            result = client.try_get(
-                path, base_url=base, page=1, limit=sample_size, **extra
+    scanned = 0
+    with_bom: list[dict] = []
+
+    for page in range(1, BOM_SCAN_PAGES + 1):
+        result = client.try_get(schema.ENDPOINT_PRODUCT, page=page, limit=500)
+        if not result.ok:
+            return ProbeFinding(
+                question=question,
+                answer="PRODUCT ENDPOINT FAILED",
+                ok=False,
+                detail=result.detail,
             )
-            label = f"{version}/{path}" + ("" if filtered else " (no filter)")
-            if result.ok:
-                working.append((version, path, result.payload))
-                attempts.append(f"{label} → JSON")
-            elif "non-JSON" in result.detail:
-                # Cin7's "no such path" answer. Kept terse so the list stays
-                # readable when everything fails.
-                attempts.append(f"{label} → no such path")
-            else:
-                attempts.append(f"{label} → {result.detail}")
 
-        if working:
+        records = schema.extract_list(result.payload)
+        if not records:
             break
 
-    if not working:
-        # Fall back to asking whether BOM data rides along on the product
-        # record instead of having its own endpoint.
-        product = client.try_get(schema.ENDPOINT_PRODUCT, page=1, limit=1)
-        product_keys: list[str] = []
-        if product.ok:
-            records = schema.extract_list(product.payload)
-            if records:
-                product_keys = sorted(records[0].keys())
+        scanned += len(records)
+        with_bom.extend(r for r in records if schema.product_has_bom(r))
 
+        if len(with_bom) >= sample_size or len(records) < 500:
+            break
+
+    if not with_bom:
         return ProbeFinding(
             question=question,
-            answer="NO WORKING ENDPOINT FOUND",
-            ok=False,
-            detail="Tried: " + "; ".join(attempts),
-            sample_keys=product_keys,
-            fix=(
-                "None of the candidate paths returned JSON. Check the product "
-                "record keys above for anything BOM- or component-shaped — if "
-                "BOM data rides along on the product, the design changes from "
-                "a separate index build to reading it inline. Without a way to "
-                "map base SKU to pack SKU, nothing else works."
-            ),
-        )
-
-    version, path, payload = working[0]
-    records = schema.extract_list(payload)
-    endpoint = f"{version}/{path}"
-
-    if not records:
-        return ProbeFinding(
-            question=question,
-            answer=f"ENDPOINT FOUND ({endpoint}) BUT EMPTY",
+            answer="NO PRODUCT CARRIES A BILL OF MATERIALS",
             ok=False,
             detail=(
-                f"{endpoint} returned JSON but no records. Either no product "
-                "has a BOM configured, or the onlyProductsWithBOM filter is "
-                "not applied as expected. Tried: " + "; ".join(attempts)
+                f"Scanned {scanned} product(s); none had a bill of materials. "
+                "Cin7 is not recording that any pack contains a number of base "
+                "units."
             ),
             fix=(
-                f"Set ENDPOINT_BILL_OF_MATERIALS to '{path}'"
-                + (" on the v1 base URL" if version == "v1" else "")
-                + ", then confirm in the Cin7 UI that your boxed products have "
-                "an additional unit of measure / BOM set up."
+                "This is a data problem, not a code one — no API call can "
+                "return a relationship that was never created. Either "
+                "configure Additional Units of Measure on your pack products "
+                "in Cin7, or supply the pack sizes from a config file. Run "
+                "`dump --sku <a-pack-sku>` to confirm against a specific "
+                "product."
             ),
         )
 
-    sample = records[0]
-    parsed = [schema.parse_bill_of_materials(r) for r in records]
-    with_components = [p for p in parsed if p and p.components]
+    parsed = [schema.parse_bill_of_materials(r) for r in with_bom]
+    usable = [p for p in parsed if p and p.components]
 
-    if not with_components:
+    if not usable:
         return ProbeFinding(
             question=question,
-            answer=f"ENDPOINT FOUND ({endpoint}) — components not parsed",
+            answer="PRODUCTS MARKED AS ASSEMBLIES BUT NO COMPONENTS PARSED",
             ok=False,
             detail=(
-                f"Top-level keys on a BOM record: {sorted(sample.keys())}. "
-                f"None of {list(schema.BOM_COMPONENT_KEYS)} held a component "
-                "list."
+                f"{len(with_bom)} of {scanned} scanned product(s) are flagged "
+                "as having a bill of materials, but none yielded components "
+                f"under any of {list(schema.BOM_COMPONENT_KEYS)}."
             ),
-            sample_keys=sorted(sample.keys()),
+            sample_keys=sorted(with_bom[0].keys()),
             fix=(
-                f"Point ENDPOINT_BILL_OF_MATERIALS at '{path}'"
-                + (" on the v1 base URL" if version == "v1" else "")
-                + ", and add the component key from the list above to "
-                "BOM_COMPONENT_KEYS in schema.py."
+                "Either those products have an empty BOM in Cin7, or the "
+                "component key differs. Check the keys above and add the right "
+                "one to BOM_COMPONENT_KEYS in schema.py."
             ),
         )
 
-    example = with_components[0]
+    example = usable[0]
     first = example.components[0]
     return ProbeFinding(
         question=question,
-        answer=f"YES — via {endpoint}",
+        answer="YES — bills of materials are on the product record",
         ok=True,
         detail=(
-            f"{len(with_components)}/{len(records)} sampled BOMs parsed. "
+            f"{len(usable)} usable BOM(s) in {scanned} scanned product(s). "
             f"Example: parent {example.parent_product_id} contains "
             f"{first.quantity:g} × {first.component_product_id}."
-        ),
-        sample_keys=sorted(sample.keys()),
-        fix=(
-            ""
-            if (version, path)
-            == ("v2", schema.ENDPOINT_BILL_OF_MATERIALS)
-            else f"Update ENDPOINT_BILL_OF_MATERIALS to '{path}'"
-            + (" on the v1 base URL" if version == "v1" else "")
-            + " in schema.py."
         ),
     )
 
