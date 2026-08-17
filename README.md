@@ -17,7 +17,7 @@ What that means concretely:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 103 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 113 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | **The field names — does Cin7 actually respond in these shapes?** | **Unverified. Run `probe`.** |
 
@@ -29,7 +29,7 @@ What that means concretely:
 ## What it does
 
 1. Reads suppliers, keeps only those opted in via an **`Auto Reorder`** additional attribute.
-2. Reads products and their Cin7 reorder parameters (lead days, safety days, reorder quantity).
+2. Reads products and their stored reorder points (`MinimumBeforeReorder`, `ReorderQuantity`).
 3. Reads bills of materials and inverts them into a **sleeve → box** index.
 4. Reads stock levels, driving from the product list so stocked-out products stay visible.
 5. Reads every open purchase order and **reconstructs inbound stock** in base units.
@@ -85,9 +85,12 @@ explicit that they are equivalent to a login and password — keep them out of t
 ```
 
 Read-only. Checks authentication, whether BOM components come back with quantities, whether
-per-line received quantities are exposed, whether supplier attributes appear, and whether
-reorder parameters parse. Where an assumption fails it names the constant in `schema.py` to
-change.
+per-line received quantities are exposed, whether supplier attributes appear, and how many
+products actually have a usable `MinimumBeforeReorder`. Where an assumption fails it names
+the constant in `schema.py` to change.
+
+That last count is worth reading closely: it tells you how much of your catalogue is
+currently eligible for automation at all.
 
 It deliberately does **not** test whether drafts can be updated, because that needs a write.
 Do that by hand: create a throwaway draft, then try `PUT /purchase` and `PUT /purchase/order`
@@ -117,26 +120,37 @@ Refuses to run unless `suppliers.pin` in `config.yaml` names at least one suppli
 
 ---
 
+## How much gets ordered
+
+Cin7 stores the reorder point itself — **`MinimumBeforeReorder`**, with a companion
+**`ReorderQuantity`**, set on the product and optionally overridden per location. This tool
+reads both rather than inferring anything.
+
+The model is a **trigger, not a target**:
+
+```
+position = on_hand + inbound − allocated
+trigger  = position <= MinimumBeforeReorder
+order    = ceil(ReorderQuantity / units_per_pack)   packs
+```
+
+So a product 60 units below its minimum with a reorder quantity of 48 gets 48 ordered, not
+60. That is what Cin7's own low-stock reorder does, which keeps the two comparable — and it
+means a reorder quantity set too low for current demand shows up as a product that keeps
+triggering rather than as a number this tool quietly overrode. Those lines are flagged
+**"still below minimum after this order"** in the report.
+
+Products with no minimum set — or a minimum of 0, which is Cin7's default — are skipped and
+listed. No reorder point means nobody has decided that product should be reordered
+automatically.
+
+> An earlier version of this tool got this wrong. It assumed only lead days, safety days and
+> reorder quantity were available and derived a par level by estimating demand from sales
+> history. That machinery is gone; the number was stored data all along.
+
+---
+
 ## Known unknowns
-
-### Par levels are inferred, not read
-
-This is the weakest link and worth understanding before trusting a number.
-
-Cin7 stores **lead days**, **safety days** and **reorder quantity**. None of those is a
-consumption rate, so they are not a par level. The conversion needs demand:
-
-```
-par = daily_demand × (lead_days + safety_days)
-```
-
-Cin7 derives demand from sales history for its own Smart Reorder, but the window, weighting
-and stockout handling it uses aren't documented. **Our number will not match theirs exactly.**
-
-`cli.py` currently wires an empty `StaticDemand`, so every product reports as lacking demand
-history rather than inventing a par level — a fabricated number would produce confident,
-wrong orders. Wiring `SalesHistoryDemand` to a real sales endpoint is the next piece of work,
-and it should be done alongside a comparison against Cin7's own reorder report.
 
 ### Draft updates may not be possible
 
@@ -164,7 +178,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-103 tests, offline, well under a second. The ones that matter most:
+113 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
@@ -184,7 +198,7 @@ cin7_reorder/
   bom.py         reverse sleeve → box index
   inbound.py     inbound reconstruction from open POs
   reorder.py     the core calculation (pure, no I/O)
-  parlevels.py   par derivation — the least-verified part
+  reorderpoints.py  reads Cin7's MinimumBeforeReorder / ReorderQuantity
   drafts.py      fingerprinting and the never-clobber rule
   pipeline.py    one run, start to finish
   probe.py       answers the gating questions

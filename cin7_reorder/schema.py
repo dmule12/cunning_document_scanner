@@ -296,82 +296,102 @@ def extract_supplier_attribute(
 # Reorder parameters
 # ---------------------------------------------------------------------------
 
-#: Where per-supplier reorder settings live on a product record.
-PRODUCT_SUPPLIER_CONTAINER_KEYS = ("Suppliers", "ProductSuppliers", "SupplierList")
+#: Cin7's stored reorder point and its companion order quantity.
+#: ``MinimumBeforeReorder`` is documented on the Product/ProductFamily
+#: structures, so these are better grounded than most keys in this module.
+MINIMUM_KEYS = ("MinimumBeforeReorder", "MinimumBeforeReOrder", "ReorderLevel")
+REORDER_QUANTITY_KEYS = ("ReorderQuantity", "ReOrderQuantity", "ReorderQty")
+
+#: Where per-location reorder overrides live on a product record.
+PRODUCT_LOCATION_CONTAINER_KEYS = (
+    "ReorderLevels",
+    "Locations",
+    "ProductLocations",
+    "LocationList",
+    "StockLocations",
+)
 
 
 def parse_reorder_parameters(
     product_payload: Mapping[str, Any],
 ) -> list[ReorderParameters]:
-    """Extract lead / safety / reorder-quantity settings from a product.
+    """Extract reorder points from a product record.
 
-    Cin7 stores these per supplier, and optionally per location within a
-    supplier. Location-level values take precedence; that precedence is
-    applied in ``parlevels.py``, not here.
+    Returns the product-level default (``location=None``) plus one entry per
+    location override. Precedence between them is applied in
+    ``reorderpoints.py``, not here — this function only reports what is
+    stored.
     """
     product_id = as_str(get_first(product_payload, "ID", "ProductID", "Id"))
     if not product_id:
         return []
 
-    suppliers = get_first(product_payload, *PRODUCT_SUPPLIER_CONTAINER_KEYS, default=[])
-    if not isinstance(suppliers, list):
-        return []
+    supplier_id = as_str(
+        get_first(product_payload, "DefaultSupplierID", "SupplierID")
+    )
 
-    results: list[ReorderParameters] = []
-
-    for entry in suppliers:
-        if not isinstance(entry, Mapping):
-            continue
-        supplier_id = as_str(get_first(entry, "SupplierID", "ID", "Id"))
-        if not supplier_id:
-            continue
-
-        supplier_level = ReorderParameters(
+    results: list[ReorderParameters] = [
+        ReorderParameters(
             product_id=product_id,
             supplier_id=supplier_id,
             location=None,
-            lead_days=as_optional_float(
-                get_first(entry, "Lead", "LeadDays", "LeadTime")
-            ),
-            safety_days=as_optional_float(
-                get_first(entry, "Safety", "SafetyDays", "SafetyStock")
+            minimum_before_reorder=as_optional_float(
+                get_first(product_payload, *MINIMUM_KEYS)
             ),
             reorder_quantity=as_optional_float(
-                get_first(entry, "ReorderQuantity", "Reorder", "ReorderQty")
+                get_first(product_payload, *REORDER_QUANTITY_KEYS)
             ),
         )
-        results.append(supplier_level)
+    ]
 
-        locations = get_first(entry, "Locations", "LocationList", default=[])
-        if not isinstance(locations, list):
+    for entry in _location_entries(product_payload):
+        location = as_str(get_first(entry, "Location", "LocationName", "Name"))
+        if not location:
             continue
-
-        for loc_entry in locations:
-            if not isinstance(loc_entry, Mapping):
-                continue
-            location = as_str(get_first(loc_entry, "Location", "LocationName", "Name"))
-            if not location:
-                continue
-            results.append(
-                ReorderParameters(
-                    product_id=product_id,
-                    supplier_id=supplier_id,
-                    location=location,
-                    lead_days=as_optional_float(
-                        get_first(loc_entry, "Lead", "LeadDays", "LeadTime")
-                    ),
-                    safety_days=as_optional_float(
-                        get_first(loc_entry, "Safety", "SafetyDays", "SafetyStock")
-                    ),
-                    reorder_quantity=as_optional_float(
-                        get_first(
-                            loc_entry, "ReorderQuantity", "Reorder", "ReorderQty"
-                        )
-                    ),
-                )
+        results.append(
+            ReorderParameters(
+                product_id=product_id,
+                supplier_id=supplier_id,
+                location=location,
+                minimum_before_reorder=as_optional_float(
+                    get_first(entry, *MINIMUM_KEYS)
+                ),
+                reorder_quantity=as_optional_float(
+                    get_first(entry, *REORDER_QUANTITY_KEYS)
+                ),
             )
+        )
 
     return results
+
+
+def _location_entries(product_payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Per-location reorder blocks, wherever Cin7 hangs them.
+
+    Checked both directly on the product and nested inside a supplier block,
+    since Cin7's UI presents low-stock reorder points on the Suppliers tab
+    and the API shape for that is unconfirmed.
+    """
+    entries: list[Mapping[str, Any]] = []
+
+    direct = get_first(product_payload, *PRODUCT_LOCATION_CONTAINER_KEYS, default=[])
+    if isinstance(direct, list):
+        entries.extend(e for e in direct if isinstance(e, Mapping))
+
+    suppliers = get_first(
+        product_payload, "Suppliers", "ProductSuppliers", "SupplierList", default=[]
+    )
+    if isinstance(suppliers, list):
+        for supplier in suppliers:
+            if not isinstance(supplier, Mapping):
+                continue
+            nested = get_first(
+                supplier, *PRODUCT_LOCATION_CONTAINER_KEYS, default=[]
+            )
+            if isinstance(nested, list):
+                entries.extend(e for e in nested if isinstance(e, Mapping))
+
+    return entries
 
 
 # ---------------------------------------------------------------------------

@@ -70,13 +70,6 @@ class SupplierConfig:
 
 
 @dataclass(frozen=True)
-class ParLevelConfig:
-    demand_window_days: int = 90
-    skip_when_parameters_missing: bool = True
-    min_daily_demand: float = 0.0
-
-
-@dataclass(frozen=True)
 class SafetyConfig:
     max_line_quantity: Optional[float] = 500.0
     max_reorder_quantity_multiple: Optional[float] = 5.0
@@ -94,7 +87,6 @@ class ApiConfig:
 class Config:
     suppliers: SupplierConfig = field(default_factory=SupplierConfig)
     locations_include: tuple[str, ...] = ()
-    par_levels: ParLevelConfig = field(default_factory=ParLevelConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     moq: dict[str, float] = field(default_factory=dict)
     api: ApiConfig = field(default_factory=ApiConfig)
@@ -121,7 +113,6 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
         suppliers_raw = data.get("suppliers") or {}
-        par_raw = data.get("par_levels") or {}
         safety_raw = data.get("safety") or {}
         api_raw = data.get("api") or {}
         locations_raw = (data.get("locations") or {}).get("include") or []
@@ -134,14 +125,6 @@ class Config:
                 or ("yes", "true", "y", "1", "on", "enabled")
             ),
             pin=tuple(str(s) for s in (suppliers_raw.get("pin") or [])),
-        )
-
-        par_levels = ParLevelConfig(
-            demand_window_days=int(par_raw.get("demand_window_days", 90)),
-            skip_when_parameters_missing=bool(
-                par_raw.get("skip_when_parameters_missing", True)
-            ),
-            min_daily_demand=float(par_raw.get("min_daily_demand", 0.0)),
         )
 
         safety = SafetyConfig(
@@ -161,7 +144,6 @@ class Config:
         return cls(
             suppliers=suppliers,
             locations_include=tuple(str(loc) for loc in locations_raw),
-            par_levels=par_levels,
             safety=safety,
             moq={str(k): float(v) for k, v in moq_raw.items()},
             api=api,
