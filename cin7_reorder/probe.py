@@ -73,13 +73,18 @@ def _probe_connectivity(client: Cin7Client) -> ProbeFinding:
 BOM_ENDPOINT_CANDIDATES = (
     ("v2", "BillOfMaterials"),
     ("v2", "billOfMaterials"),
-    ("v2", "bom"),
     ("v2", "productBOM"),
-    ("v2", "product/bom"),
+    ("v2", "productBillOfMaterials"),
+    ("v2", "assembly"),
     ("v1", "BillOfMaterials"),
-    ("v1", "billOfMaterials"),
     ("v1", "bom"),
 )
+
+#: Sent to every candidate on the first pass. A second pass drops them
+#: entirely, because an unrecognised query parameter is itself a plausible
+#: cause of Cin7's redirect-to-error-page behaviour — and every attempt in
+#: the first probe run carried `onlyProductsWithBOM`.
+BOM_FILTER_PARAMS = {"onlyProductsWithBOM": "true"}
 
 
 def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
@@ -89,25 +94,26 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
     working: list[tuple[str, str, Any]] = []
     attempts: list[str] = []
 
-    for version, path in BOM_ENDPOINT_CANDIDATES:
-        base = client.base_url_v1 if version == "v1" else None
-        result = client.try_get(
-            path,
-            base_url=base,
-            page=1,
-            limit=sample_size,
-            onlyProductsWithBOM="true",
-        )
-        label = f"{version}/{path}"
-        if result.ok:
-            working.append((version, path, result.payload))
-            attempts.append(f"{label} → JSON")
-        elif "non-JSON" in result.detail:
-            # By far the common case — Cin7's "no such path" answer. Keep it
-            # short so the list stays readable when all eight fail.
-            attempts.append(f"{label} → no such path")
-        else:
-            attempts.append(f"{label} → {result.detail}")
+    for filtered in (True, False):
+        for version, path in BOM_ENDPOINT_CANDIDATES:
+            base = client.base_url_v1 if version == "v1" else None
+            extra = dict(BOM_FILTER_PARAMS) if filtered else {}
+            result = client.try_get(
+                path, base_url=base, page=1, limit=sample_size, **extra
+            )
+            label = f"{version}/{path}" + ("" if filtered else " (no filter)")
+            if result.ok:
+                working.append((version, path, result.payload))
+                attempts.append(f"{label} → JSON")
+            elif "non-JSON" in result.detail:
+                # Cin7's "no such path" answer. Kept terse so the list stays
+                # readable when everything fails.
+                attempts.append(f"{label} → no such path")
+            else:
+                attempts.append(f"{label} → {result.detail}")
+
+        if working:
+            break
 
     if not working:
         # Fall back to asking whether BOM data rides along on the product
@@ -473,6 +479,22 @@ def _probe_reorder_parameters(client: Cin7Client, sample_size: int) -> ProbeFind
 # ---------------------------------------------------------------------------
 
 
+def _wrap_keys(keys: list[str], width: int = 68) -> list[str]:
+    """Wrap a long key list so it stays readable in a terminal."""
+    lines: list[str] = []
+    current = ""
+    for key in keys:
+        candidate = f"{current}, {key}" if current else key
+        if len(candidate) > width and current:
+            lines.append(current)
+            current = key
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
 def format_findings(findings: list[ProbeFinding]) -> str:
     out: list[str] = ["", "=" * 78, "CIN7 REORDER — PROBE RESULTS", "=" * 78, ""]
 
@@ -482,6 +504,12 @@ def format_findings(findings: list[ProbeFinding]) -> str:
         out.append(f"        -> {finding.answer}")
         if finding.detail:
             out.append(f"        {finding.detail}")
+        if finding.sample_keys:
+            # These are the whole point of a failed check: the field names
+            # actually present are what tell us where the data lives.
+            out.append("        Record keys seen:")
+            for chunk in _wrap_keys(finding.sample_keys):
+                out.append(f"          {chunk}")
         if finding.fix:
             out.append(f"        FIX: {finding.fix}")
         out.append("")
