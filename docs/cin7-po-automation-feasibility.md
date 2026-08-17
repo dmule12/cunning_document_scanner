@@ -5,7 +5,10 @@ and reorder levels, and raises purchase orders in Cin7? Is there an API limitati
 purchase orders being fired off?*
 
 **Short answer:** No such limitation exists. `POST /purchase` creates purchase orders without
-restriction. The real work is elsewhere: **the thing you count is not the thing you order.**
+restriction. The real work is elsewhere, in two facts that compound: **the thing you count is not the
+thing you order**, and **Cin7 cannot see the difference once it is on order.**
+
+*Rev. 3 — inbound stock reconstruction.*
 
 ---
 
@@ -18,6 +21,7 @@ result excerpts of those same docs plus the public Apiary reference. Claims are 
 | Marker | Meaning |
 | --- | --- |
 | **[V]** | Verified — stated explicitly in Cin7 documentation |
+| **[A]** | Confirmed by the account owner against the live system |
 | **[C]** | To confirm — inferred from the feature model or permission structure; check against a live account before writing code |
 
 The **[C]** items in [§9](#9-open-questions) marked *gating* decide the shape of the build. Resolve
@@ -33,9 +37,17 @@ those before anyone writes code.
 | Create it as a DRAFT | ✅ POs land in DRAFT, authorised as a separate step **[V]** |
 | Authorise via API | ✅ Supported; a `PURCHASE_ORDER_AUTHORISED` webhook exists **[V]** |
 | Read stock, suppliers, locations, BOMs | ✅ All exposed **[V]** |
-| **Email the PO to the supplier via API** | ❌ No documented endpoint **[C]** |
+| **Show inbound box stock against the sleeve SKU** | ❌ `OnOrder` stays at zero until receipt **[A]** |
 | **Order a different SKU than the one that ran low** | ❌ Not a Cin7 behaviour **[V]** |
+| **Email the PO to the supplier via API** | ❌ No documented endpoint **[C]** |
 | **Restrict automatic ordering to chosen suppliers** | ❌ Not a Cin7 behaviour — we build it **[V]** |
+
+**The first limitation is the expensive one.** An open PO for boxes is invisible to the sleeve SKU's
+`OnOrder` figure — the stock only appears when it is received and auto-disassembly runs **[A]**. A
+naive script therefore sees no inbound stock, and reorders the same shortfall on every run until the
+delivery lands. With a two-week supplier lead time and a twice-weekly schedule, that is roughly four
+duplicate orders before the first box arrives. [§6](#6-reorder-maths) rebuilds the calculation around
+this.
 
 **On emailing:** in Cin7 Core you send a PO by opening it and clicking **Email → Purchase Order**,
 which attaches the PDF automatically **[V]**. There is no API equivalent. Working around it would
@@ -73,6 +85,11 @@ evidently **implemented as an assembly BOM**:
 Your observation that these are separate SKUs is consistent with that: AUOM creates a distinct
 product record for the pack, with a BOM linking it to its components. The receipt-side conversion
 should therefore already work — you order boxes, you receive sleeves into stock.
+
+**But the link is one-directional, and only fires on receipt.** While a PO is outstanding, Cin7 holds
+the inbound quantity against the box SKU and does not reflect it against the sleeve **[A]**. The two
+records are connected at the moment stock lands and at no point before it. That gap is what
+[§6](#6-reorder-maths) has to fill.
 
 ### The consequence for the built-in features
 
@@ -185,15 +202,26 @@ Both are created on the API setup page at `inventory.dearsystems.com/ExternalAPI
 | 1 | `GET /ref/location`, `GET /supplier` | Resolve IDs; read the `Auto Reorder` attribute and build the supplier allowlist |
 | 2 | `GET /product?page=N&limit=500` | SKU master, supplier links |
 | 3 | `GET /BillOfMaterials?onlyProductsWithBOM=true` | Build the reverse sleeve → box index ([§3](#3-sku-resolution--finding-the-box-from-the-sleeve)) |
-| 4 | `GET /productAvailability?page=N&limit=500` | OnHand / Available / Allocated / OnOrder, **on the sleeve SKU** |
-| 5 | `GET /purchaseList?OrderStatus=...` | Open POs, for idempotency |
-| 6 | `POST /purchase` | One PO per (supplier, location), lines against the **box SKU**. Lands in DRAFT |
+| 4 | `GET /productAvailability?page=N&limit=500` | OnHand / Allocated, **on the sleeve SKU**. `OnOrder` is read but not used — see [§6](#6-reorder-maths) |
+| 5 | `GET /purchaseList?OrderStatus=...` | Every open PO |
+| 6 | `GET /purchase?ID=...`, once per open PO | Order and receipt lines, to reconstruct inbound stock |
+| 7 | `POST /purchase` — or update, for a standing draft | One PO per (supplier, location), lines against the **box SKU**. Lands in DRAFT |
 
 **Never called:** any authorise or email step. The run ends with drafts.
 
-Note the asymmetry in calls 4 and 6: **stock is read on the sleeve SKU, the order is written on the
+Note the asymmetry in calls 4 and 7: **stock is read on the sleeve SKU, the order is written on the
 box SKU.** Any code review of this script should check that boundary specifically — it is the
 likeliest place for a subtle bug, and the resulting PO would look perfectly plausible.
+
+### The one place we loop per record
+
+Call 6 fetches detail for each open PO individually, which breaks the "page the bulk endpoints,
+never loop" rule below. That is deliberate and safe: the loop is bounded by **the number of open
+purchase orders**, not by SKU count. Dozens, not thousands. Against a 5,000/day cap it is
+comfortable, and there is no bulk alternative that returns per-line received quantities.
+
+If open-PO count ever grows into the hundreds, cache detail per PO and re-fetch only those whose
+`LastModifiedOn` has moved.
 
 ### A trap in `productAvailability`
 
@@ -212,8 +240,14 @@ Pagination defaults to 100 per page, up to 500 with `?limit=500` **[V]**.
 ## 6. Reorder maths
 
 ```
+# inbound, reconstructed from open POs — NOT read from OnOrder
+for each open PO line:
+    outstanding_units = ordered_qty − received_qty        # never just ordered_qty
+    base_sku, ratio   = bom_index.resolve(line.product)   # box → sleeve, or identity
+    inbound_base[base_sku, location] += outstanding_units × ratio
+
 # computed on the SLEEVE SKU
-need_base   = par − (OnHand + OnOrder − Allocated)
+need_base   = par − (OnHand + inbound_base − Allocated)
 
 # ordered on the BOX SKU
 boxes       = ceil(need_base / base_units_per_box)
@@ -225,15 +259,54 @@ order_line  = { product: base_sku, quantity: need_base }   # flagged in the repo
 then apply supplier MOQ
 ```
 
-`Available = OnHand − Allocated` in Cin7's own model **[V]**; `OnOrder` is included so that stock
-already inbound on an existing PO is not ordered twice.
+`Available = OnHand − Allocated` in Cin7's own model **[V]**.
 
-**One caution on `OnOrder`:** an outstanding PO is recorded against the **box** SKU, while the
-shortfall is computed against the **sleeve** SKU. Whether Cin7 reflects an inbound box in the
-sleeve's `OnOrder` figure — or only on receipt, when auto-disassembly runs — determines whether the
-script double-orders across consecutive runs. **This is a gating question** ([§9](#9-open-questions),
-Q2). If box POs do not show up in the sleeve's `OnOrder`, the script must compute inbound quantities
-itself from open POs in call 5 and convert them through the BOM index.
+### Why `OnOrder` is ignored entirely
+
+An outstanding PO is recorded against the **box** SKU, while the shortfall is computed against the
+**sleeve** SKU, and **Cin7 does not propagate one to the other** **[A]**. The sleeve's `OnOrder`
+reads zero while boxes are in transit.
+
+The tempting fix is to use `OnOrder` for products ordered as base SKUs and reconstruct it only for
+boxed ones. **Don't.** That mixed approach double-counts the moment a product is ordered both ways,
+and it puts a per-line branch inside the one calculation that must not be subtly wrong. The script
+already needs open-PO line detail for the box lines, so handling every line the same way costs
+nothing extra and yields one auditable number.
+
+**Ignore `OnOrder`. Compute all inbound stock from open purchase orders.**
+
+### Partial receipts: the likeliest silent bug
+
+Inbound must be **ordered − received**, never ordered.
+
+Cin7 supports partial receipts, adding stock-received lines repeatedly until everything arrives
+**[V]**. Consider a PO for 10 boxes of 24 with 4 boxes already received:
+
+- Those 4 boxes auto-disassembled on receipt, so **96 sleeves are already in `OnHand`**.
+- **6 boxes — 144 sleeves — are still inbound.**
+
+Counting the full 10 boxes as inbound double-counts the received 96, understates the true shortfall,
+and suppresses reorders that are genuinely needed. Nothing about the resulting PO looks wrong.
+
+### How each PO state counts
+
+| PO state | Treatment |
+| --- | --- |
+| DRAFT, created by this automation | Updated in place this run — **not** counted as inbound |
+| AUTHORISED, nothing received | Full quantity counts as inbound |
+| Partially received | Only `ordered − received` counts |
+| Fully received / completed | Nothing — already in `OnHand` |
+| Voided | Nothing |
+
+### The run reference does not prevent this
+
+Worth stating plainly, because it is easy to assume otherwise: **the per-run reference stamp
+described in [§8](#8-constraints) never protected against Tuesday's order being repeated on
+Friday.** Those are different runs with different references.
+
+The reference guards crash-retry *within* a single run. The inbound calculation guards duplication
+*across* runs. Two separate mechanisms for two separate problems — and only the second one addresses
+the `OnOrder` gap.
 
 **Where do par levels come from?** Cin7's native model is **lead, safety and reorder quantity, set
 per supplier and per location**, from the Suppliers tab **[V]**. Locations inherit supplier values by
@@ -251,13 +324,18 @@ compounds quietly. Note the levels belong on the **sleeve** SKU, since that is w
 Every run emits a report alongside the draft POs:
 
 - Every line: sleeve SKU, resolved box SKU, raw need in base units, boxes ordered, rounding applied.
+- **Inbound stock reconstructed per SKU, itemised by the POs it came from.** This number does not
+  exist anywhere in Cin7's own UI, so the report is the only place anyone can audit it. If the script
+  is ever accused of over- or under-ordering, this is the section that settles it.
+- **Drafts updated in place**, with what changed since the previous run.
+- **Drafts left alone because a human had edited them** — needs reconciling by hand.
 - **Products ordered as base SKUs** because no box parent was found — the reviewer's checklist.
 - **Products skipped** because a base SKU resolved to multiple box parents — a data fix queue.
 - Suppliers considered vs suppliers skipped for not being opted in.
 - API calls made, against the daily budget.
 
 This report is what makes the fallback behaviours safe rather than silent. Without it, a missing BOM
-looks identical to a correctly ordered single.
+looks identical to a correctly ordered single, and a wrong inbound figure is invisible.
 
 ---
 
@@ -286,13 +364,30 @@ in Cin7. A re-run must not duplicate them.
 query `purchaseList` for that reference before creating anything. Already present → skip. This makes
 the run safely re-runnable, which matters more than it sounds for a job on a schedule nobody watches.
 
-### Draft accumulation
+### Standing drafts are updated in place
 
-Drafts pile up if nobody reviews them. Two runs a week with no review discipline means an
-ever-growing pile of stale suggestions computed against stock levels that have since moved. Needs a
-staleness policy: either the run voids its own unreviewed drafts from the previous cycle, or the
-report escalates their age. **Decide this before going live** — it is the most likely way this
-quietly stops being useful.
+When a supplier already has an unreviewed draft from a previous run, the script **recalculates and
+overwrites it** rather than creating a second one.
+
+This dissolves the draft-staleness problem: the standing draft always reflects today's stock, so it
+cannot go stale while it waits. The report should still surface its age, because a draft nobody has
+looked at in three weeks is an operational problem even when its numbers are current.
+
+**The clobbering guard.** If someone has already adjusted Tuesday's draft — changed a quantity, added
+a line, edited the delivery date — a blind overwrite destroys that work silently. So:
+
+1. Store a fingerprint of exactly what the automation last wrote to each draft.
+2. Next run, re-read the draft. If it still matches the fingerprint, overwrite freely.
+3. **If it differs, do not overwrite.** Leave it untouched and flag it in the report as
+   human-modified.
+
+Silently discarding someone's manual correction is worse than a duplicate PO, because a duplicate is
+visible and a lost edit is not.
+
+> **[C] — gating.** Whether the API can update an existing draft purchase at all. Documented Purchase
+> methods are GET, POST and DELETE **[V]**; PUT is unconfirmed. Order lines may be updatable through a
+> separate endpoint. If no update path exists, the fallback is delete-and-recreate — which changes the
+> PO number each run, and note that **voiding a purchase in Cin7 is permanent** **[V]**.
 
 ---
 
@@ -301,17 +396,23 @@ quietly stops being useful.
 | # | Question | Impact |
 | --- | --- | --- |
 | 1 | **Does `GET /BillOfMaterials` return components with quantities?** | **Gating.** The entire sleeve → box index depends on it |
-| 2 | **Does an open box-SKU PO appear in the sleeve SKU's `OnOrder`?** | **Gating.** If not, the script must compute inbound stock itself or it will double-order |
-| 3 | Are supplier Additional Attributes returned by `GET /supplier`? | Decides whether the allowlist lives in Cin7 or in config |
-| 4 | Is every boxed product's BOM actually configured, and one box per sleeve? | Determines the size of the data-cleanup task before go-live |
-| 5 | Where do par levels live today? How many SKUs × locations? | Sizes the run and settles the [§6](#6-reorder-maths) question |
-| 6 | Is MOQ recorded anywhere in Cin7? | If not, it needs a home — likely an Additional Attribute |
+| 2 | **Can an existing draft purchase be updated via the API?** | **Gating.** Decides update-in-place vs delete-and-recreate |
+| 3 | Does `GET /purchase` expose per-line received quantities? | Partial-receipt handling depends on it; without it, inbound cannot be computed correctly |
+| 4 | Are supplier Additional Attributes returned by `GET /supplier`? | Decides whether the allowlist lives in Cin7 or in config |
+| 5 | Is every boxed product's BOM configured, and one box per sleeve? | Sizes the data-cleanup task before go-live |
+| 6 | Where do par levels live today? How many SKUs × locations? | Sizes the run and settles the [§6](#6-reorder-maths) question |
+| 7 | Is MOQ recorded anywhere in Cin7? | If not, it needs a home — likely an Additional Attribute |
 
-**Resolved since the first draft:** whether `POST /purchase` accepts a UOM on order lines. Now moot —
-the box is a separate SKU, so the line points at a product, not a unit.
+**Resolved:**
 
-Questions 1 and 2 are answerable in roughly fifteen minutes against a live account with a REST
-client: pull one BOM, then check a product with an open box PO and read its availability record.
+- *Does `POST /purchase` accept a UOM on order lines?* — moot. The box is a separate SKU, so the line
+  points at a product, not a unit.
+- *Does an open box-SKU PO appear in the sleeve SKU's `OnOrder`?* — **No** **[A]**. Confirmed against
+  the live system. This is why [§6](#6-reorder-maths) reconstructs inbound stock from open POs.
+
+Question 3 has been promoted to near-gating by that answer: if per-line received quantities are not
+available, partial receipts cannot be netted off and the inbound figure will be wrong in exactly the
+cases that matter most.
 
 ---
 
@@ -333,12 +434,27 @@ does not sell. No configuration of reorder quantities changes which *product* th
 The build is justified. Its risk is not technical difficulty but data quality: it is only as good as
 the BOM links and par levels behind it.
 
+### Why not auto-authorise?
+
+Considered and rejected for now. Authorising automatically would save a click per PO, but it removes
+the only checkpoint between a wrong calculation and a committed accounting record.
+
+The quantity on each line now depends on three things that can each be wrong without looking wrong:
+a reconstructed inbound figure, a BOM ratio, and a par level. A PO for 12 boxes instead of 2 is
+entirely plausible on screen. While those three inputs are unproven, the human review step is the
+cheapest insurance available.
+
+**Revisit after the read-only period** in [§11](#11-recommended-sequence) has shown the script's
+numbers matching what would have been ordered by hand. At that point auto-authorising for suppliers
+with a clean track record is a reasonable next step.
+
 ---
 
 ## 11. Recommended sequence
 
-1. **Answer gating questions 1 and 2** against the live account. Roughly fifteen minutes, and Q2 in
-   particular can change the design.
+1. **Answer gating questions 1, 2 and 3** against the live account. Roughly twenty minutes with a REST
+   client: pull one BOM, try updating a draft purchase, and read a partially-received PO to see
+   whether per-line received quantities come back.
 2. **Audit the BOM data.** Every boxed product needs exactly one box SKU with a correct component
    quantity. Export the BOM list and check it against what you actually buy. This is likely the
    largest task in the project and it is not code.
@@ -348,9 +464,15 @@ the BOM links and par levels behind it.
 5. **Enable PO creation** behind the idempotency guard, pinned to that one supplier.
 6. **Widen to further suppliers** by toggling the attribute, as confidence builds.
 
-Step 4 matters most. The risk here is not API failure — it is correct-looking POs built on a wrong
-BOM quantity or a stale par level. A PO for 12 boxes instead of 2 looks entirely plausible on screen
-and costs real money. **Prove the numbers before granting write access.**
+Step 4 matters most, and the `OnOrder` finding makes it matter more. The risk here is not API failure
+— it is correct-looking POs built on a wrong BOM quantity, a stale par level, or a mis-reconstructed
+inbound figure. A PO for 12 boxes instead of 2 looks entirely plausible on screen and costs real
+money.
+
+**Run the read-only period across at least one full supplier lead time**, so that the inbound
+reconstruction is exercised while stock is actually in transit and partially received. That is the
+only window in which its arithmetic can be checked against reality, and it is the part of this design
+with no equivalent inside Cin7 to compare against. **Prove the numbers before granting write access.**
 
 ---
 
