@@ -17,7 +17,7 @@ What that means concretely:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 113 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 126 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | **The field names — does Cin7 actually respond in these shapes?** | **Unverified. Run `probe`.** |
 
@@ -63,16 +63,42 @@ This tool ignores `OnOrder` entirely and rebuilds the number from open POs.
 
 ## Setup
 
+Needs Python 3.10 or newer.
+
 ```bash
 cd tools/cin7-reorder
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-
-cp .env.example .env      # then fill in your credentials
 ```
 
-Credentials come from `https://inventory.dearsystems.com/ExternalAPI`. Cin7's own docs are
-explicit that they are equivalent to a login and password — keep them out of the repo.
+### Credentials
+
+Create an application at **https://inventory.dearsystems.com/ExternalAPI** and copy the
+**Account ID** and **Application Key**. Cin7's own docs are explicit that these are equivalent
+to a login and password.
+
+Either provide them in a file:
+
+```bash
+cp .env.example .env
+```
+
+```ini
+CIN7_ACCOUNT_ID=your-account-id
+CIN7_APP_KEY=your-application-key
+```
+
+Or as environment variables, which is what CI uses:
+
+```bash
+export CIN7_ACCOUNT_ID='your-account-id'
+export CIN7_APP_KEY='your-application-key'
+```
+
+Environment variables win over the file, so a stray `.env` in a checkout can never shadow a CI
+secret. `.env` is gitignored; `.env.example` holds no real values. Quotes and an `export`
+prefix in the file are both tolerated, since that is how credentials usually arrive when
+pasted.
 
 ---
 
@@ -178,7 +204,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-113 tests, offline, well under a second. The ones that matter most:
+126 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
