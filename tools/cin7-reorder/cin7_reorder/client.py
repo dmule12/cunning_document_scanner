@@ -148,44 +148,85 @@ class Cin7Client:
     ) -> "ProbeResult":
         """A GET that reports what happened instead of raising.
 
-        Used only by ``probe``, to test candidate endpoint paths without a
-        single 404 aborting the whole investigation. Cin7 answers an unknown
-        path with a 302 to an HTML error page rather than a clean 404, so
-        "did this return JSON" is the only reliable success test.
+        A failure here is a fact to act on, not an exception: an unknown
+        candidate path must not abort endpoint resolution, and Cin7 puts
+        actionable guidance inside 400 bodies — "use the AdvancedPurchase
+        endpoint" — which raising would discard. Cin7 answers an unknown path
+        with a 302 to an HTML error page rather than a clean 404, so "did this
+        return JSON" is the only reliable success test.
+
+        A 429 is the exception to that, and is retried rather than reported.
+        It says nothing about the request; it says to wait. This method reads
+        every purchase order in a run — by far the most call-hungry stage — and
+        treating a rate limit as a permanent failure made a busy minute look
+        like an unreadable purchase, which aborts an ``apply``.
+
+        The token bucket cannot prevent this on its own: it lives in the
+        process, and Cin7's limit is a rolling window across all of them. Two
+        runs a minute apart each start believing they have the full allowance.
         """
         url = path if base_url is None else f"{base_url.rstrip('/')}/{path}"
 
-        self._limiter.acquire()
-        self.call_count += 1
+        for attempt in range(MAX_RETRIES):
+            self._limiter.acquire()
+            self.call_count += 1
 
-        try:
-            response = self._client.get(url, params=_clean(params))
-        except httpx.TransportError as exc:
-            return ProbeResult(path=url, ok=False, detail=f"transport error: {exc}")
+            try:
+                response = self._client.get(url, params=_clean(params))
+            except httpx.TransportError as exc:
+                return ProbeResult(
+                    path=url, ok=False, detail=f"transport error: {exc}"
+                )
 
-        if response.status_code >= 400:
-            # Keep the body: Cin7 puts actionable guidance in 400s, such as
-            # "use the AdvancedPurchase endpoint", and discarding it turns a
-            # fixable problem into an opaque failure.
+            if response.status_code == 429:
+                wait = self._retry_after_seconds(response, attempt)
+                log.warning(
+                    "Rate limited by Cin7 on GET %s; waiting %.1fs (attempt %d/%d)",
+                    path,
+                    wait,
+                    attempt + 1,
+                    MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+
+            if response.status_code >= 400:
+                # Keep the body: Cin7 puts actionable guidance in 400s, and
+                # discarding it turns a fixable problem into an opaque failure.
+                return ProbeResult(
+                    path=url,
+                    ok=False,
+                    status=response.status_code,
+                    detail=f"HTTP {response.status_code}: {response.text[:500]}",
+                )
+
+            try:
+                payload = response.json()
+            except ValueError:
+                return ProbeResult(
+                    path=url,
+                    ok=False,
+                    status=response.status_code,
+                    detail=(
+                        "non-JSON body (Cin7 redirects unknown paths to an "
+                        "HTML error page)"
+                    ),
+                )
+
             return ProbeResult(
-                path=url,
-                ok=False,
-                status=response.status_code,
-                detail=f"HTTP {response.status_code}: {response.text[:500]}",
-            )
-
-        try:
-            payload = response.json()
-        except ValueError:
-            return ProbeResult(
-                path=url,
-                ok=False,
-                status=response.status_code,
-                detail="non-JSON body (Cin7 redirects unknown paths to an HTML error page)",
+                path=url, ok=True, status=response.status_code, payload=payload
             )
 
         return ProbeResult(
-            path=url, ok=True, status=response.status_code, payload=payload
+            path=url,
+            ok=False,
+            status=429,
+            detail=(
+                f"still rate limited after {MAX_RETRIES} attempts. Cin7 allows "
+                "60 calls per 60 seconds across every process using these "
+                "credentials, so another run or integration may be competing "
+                "for the same allowance."
+            ),
         )
 
     def get_resolved(
