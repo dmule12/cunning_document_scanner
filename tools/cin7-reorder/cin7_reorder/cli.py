@@ -37,6 +37,8 @@ from .dump import (
     render,
     render_deep,
     render_flag_sweep,
+    render_purchase_survey,
+    survey_purchase_list,
     sweep_include_flags,
 )
 from .pipeline import Pipeline
@@ -117,6 +119,11 @@ def dump(
         "--flags",
         help="Sweep candidate Include* flags to see which fills which collection. Needs --id.",
     ),
+    purchases: bool = typer.Option(
+        False,
+        "--purchases",
+        help="Survey the purchase list: statuses, supplier keys, how many rows would cost a fetch.",
+    ),
     keys_only: bool = typer.Option(
         False,
         "--keys-only",
@@ -130,10 +137,16 @@ def dump(
     Read-only. ``--with-bom`` searches the catalogue for products that carry
     a bill of materials, which is more reliable than guessing a SKU when the
     question is "show me a real pack product".
+
+    ``--purchases`` answers a different question: of the open purchase orders
+    on this account, how many can be filtered out before they cost a detail
+    call. That stage is the entire cost of a run.
     """
-    if not sku and not product_id and not with_bom:
+    if not sku and not product_id and not with_bom and not purchases:
         typer.secho(
-            "Give --sku, --id, or --with-bom.", fg=typer.colors.RED, err=True
+            "Give --sku, --id, --with-bom, or --purchases.",
+            fg=typer.colors.RED,
+            err=True,
         )
         raise typer.Exit(code=2)
 
@@ -147,6 +160,11 @@ def dump(
     credentials, config = _load(config_path)
 
     with Cin7Client(credentials, config.api, read_only=True) as client:
+        if purchases:
+            typer.echo(render_purchase_survey(survey_purchase_list(client)))
+            typer.echo(f"API calls used: {client.call_count}")
+            return
+
         if flags:
             rows, winners = sweep_include_flags(client, product_id)
             typer.echo(render_flag_sweep(rows, winners))
