@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 210 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 223 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -24,7 +24,10 @@ A first `probe` run has settled some of this. Current state:
 | Advanced and Service purchases | ✅ At `advanced-purchase` — hyphenated, resolved at runtime |
 | Purchase list statuses, supplier keys, order type | ✅ Surveyed across 2312 live orders |
 | Inbound reconstruction | ✅ Working on live data — 4 duplicate orders prevented on the first clean run |
-| Whether a draft purchase can be updated | Untested — needs a manual write |
+| Creating a draft purchase order | ✅ Confirmed live — header, then lines to `purchase/order` |
+| The suggestions themselves | ✅ One run reviewed and ordered by hand from |
+| Whether a standing draft can be **updated** | Still untested — the first draft was authorised before a second run saw it |
+| Behaviour across a supplier lead time | Untested — needs partial receipts against real inbound |
 
 `probe` is still the first command to run.
 
@@ -344,11 +347,28 @@ automatically.
 
 ## Known unknowns
 
-### Draft updates may not be possible
+### Draft updates are still unproven
 
-Cin7's documented Purchase methods are GET, POST and DELETE. PUT is unconfirmed. If it turns
-out drafts can't be updated, the fallback is delete-and-recreate — note that changes the PO
-number every run, and **voiding in Cin7 is permanent.**
+Creating a draft is confirmed working. **Updating one is not**, and it cannot be tested
+deliberately: it needs a draft that survives from one run to the next, and the first one this
+tool raised was reviewed, authorised and emailed — which is the intended outcome, and the
+reason the path went unexercised.
+
+Both verbs are tried against `purchase/order`, so it may simply work. Until a draft actually
+sits unauthorised across two runs, nobody knows. Watch for `Drafts updated` in the report the
+first time that happens.
+
+If it turns out drafts can't be updated, the fallback is delete-and-recreate — note that
+changes the PO number every run, and **voiding in Cin7 is permanent.**
+
+### A purchase is a header plus sub-resources
+
+`POST /purchase` creates the header. Order lines go to **`POST /purchase/order`** with a
+`TaskID`, matching the tabs Cin7's own UI shows: Order, Stock received, Invoice.
+
+Sending lines inside the `POST /purchase` body is accepted, answers `200`, and creates a
+purchase order with nothing on it. That happened once, live. `build_purchase_payload` now
+takes no lines at all rather than taking them and ignoring them.
 
 ---
 
@@ -370,7 +390,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-210 tests, offline, well under a second. The ones that matter most:
+223 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
