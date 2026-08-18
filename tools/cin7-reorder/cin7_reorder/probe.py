@@ -35,6 +35,7 @@ def run_probe(client: Cin7Client, *, sample_size: int = 5) -> list[ProbeFinding]
     return [
         _probe_connectivity(client),
         _probe_include_flags(client),
+        _probe_availability(client),
         _probe_bom_components(client, sample_size),
         _probe_purchase_receipts(client, sample_size),
         _probe_draft_update(client),
@@ -178,6 +179,71 @@ def _probe_include_flags(client: Cin7Client) -> ProbeFinding:
             if not missing
             else f"No product had: {', '.join(missing)}. That may just mean "
             "none is configured, rather than a broken flag."
+        ),
+    )
+
+
+def _probe_availability(client: Cin7Client) -> ProbeFinding:
+    """Where do stock levels live?
+
+    Without these the run cannot tell what is in stock, so every product
+    reads as zero on hand and the tool would order the whole catalogue.
+    """
+    question = "Can we read stock levels?"
+
+    endpoint = client.resolve_endpoint(
+        schema.AVAILABILITY_ENDPOINT_CANDIDATES, page=1, limit=5
+    )
+
+    if endpoint is None:
+        return ProbeFinding(
+            question=question,
+            answer="NO WORKING ENDPOINT",
+            ok=False,
+            detail=(
+                "Tried: " + ", ".join(schema.AVAILABILITY_ENDPOINT_CANDIDATES)
+            ),
+            fix=(
+                "Nothing can run without stock levels — every product would "
+                "read as zero on hand. Find the right path in Cin7's API "
+                "reference and add it to AVAILABILITY_ENDPOINT_CANDIDATES in "
+                "schema.py."
+            ),
+        )
+
+    result = client.try_get(endpoint, page=1, limit=5)
+    records = schema.extract_list(result.payload) if result.ok else []
+    parsed = [schema.parse_availability(r) for r in records]
+    usable = [p for p in parsed if p is not None]
+
+    if not usable:
+        return ProbeFinding(
+            question=question,
+            answer=f"ENDPOINT FOUND ({endpoint}) BUT NOTHING PARSED",
+            ok=False,
+            detail=f"{len(records)} record(s) returned; none had a product ID.",
+            sample_keys=sorted(records[0].keys()) if records else [],
+            fix=(
+                "Check the availability field names in schema.parse_availability "
+                "against the keys above."
+            ),
+        )
+
+    example = usable[0]
+    return ProbeFinding(
+        question=question,
+        answer=f"YES — via {endpoint}",
+        ok=True,
+        detail=(
+            f"Example: product {example.product_id} at "
+            f"{example.location or '(no location)'} — on hand "
+            f"{example.on_hand:g}, allocated {example.allocated:g}."
+        ),
+        fix=(
+            ""
+            if endpoint == schema.ENDPOINT_PRODUCT_AVAILABILITY
+            else f"Set ENDPOINT_PRODUCT_AVAILABILITY to '{endpoint}' in schema.py "
+            "so the run does not spend calls rediscovering it."
         ),
     )
 

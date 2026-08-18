@@ -15,8 +15,9 @@ suppliers:
   # labels in the attribute set definition, not on the supplier. So the slot
   # has to be named here directly.
   #
-  # Run `probe` — it prints which slots hold values on your suppliers.
-  attribute_field: null      # e.g. "AdditionalAttribute1"
+  # Confirmed against the live account: the 'Auto Reorder' checkbox lands in
+  # AdditionalAttribute1 and reads as the string 'true' when ticked.
+  attribute_field: "AdditionalAttribute1"
 
   # Only used by nested attribute shapes, which this account does not use.
   attribute_name: "Auto Reorder"

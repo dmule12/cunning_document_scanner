@@ -108,7 +108,7 @@ class Pipeline:
 
         products, reorder_params, boms = self._load_products()
         bom = self._build_bom_index(boms, result)
-        availability = self._load_availability()
+        availability = self._load_availability(result)
         purchases = self._load_purchases()
 
         our_drafts = {
@@ -254,9 +254,25 @@ class Pipeline:
 
         return index
 
-    def _load_availability(self) -> dict[tuple[str, str], Availability]:
+    def _load_availability(
+        self, result: RunResult
+    ) -> dict[tuple[str, str], Availability]:
+        endpoint = self.client.resolve_endpoint(
+            schema.AVAILABILITY_ENDPOINT_CANDIDATES, page=1, limit=1
+        )
+        if endpoint is None:
+            # Not recoverable: without stock levels every product looks like
+            # it has nothing on hand, and the run would order the entire
+            # catalogue. Far better to stop than to produce that confidently.
+            raise Cin7Error(
+                "No working product-availability endpoint. Tried: "
+                + ", ".join(schema.AVAILABILITY_ENDPOINT_CANDIDATES)
+                + ". Without stock levels every product would read as zero on "
+                "hand and the run would order everything, so it stops here."
+            )
+
         found: dict[tuple[str, str], Availability] = {}
-        for record in self.client.paginate(schema.ENDPOINT_PRODUCT_AVAILABILITY):
+        for record in self.client.paginate(endpoint):
             parsed = schema.parse_availability(record)
             if parsed is None:
                 continue
