@@ -130,16 +130,19 @@ def make_handler(*, advanced_works: bool = True):
                 },
             )
 
-        return httpx.Response(200, json={})
+        # Cin7's answer for an unknown path: a redirect to an HTML error page,
+        # not a 404. Reproduced so endpoint resolution is tested against the
+        # real behaviour rather than a friendly empty JSON body.
+        return httpx.Response(200, text=NOT_FOUND_HTML)
 
     return handler
 
 
-def run_pipeline(tmp_path, *, advanced_works: bool = True):
+def run_pipeline(tmp_path, *, advanced_works: bool = True, dry_run: bool = True):
     client = Cin7Client(
         Credentials(account_id="a", app_key="k"),
         ApiConfig(daily_call_budget=200),
-        read_only=True,
+        read_only=dry_run,
         transport=httpx.MockTransport(make_handler(advanced_works=advanced_works)),
         rate_limiter=NullRateLimiter(),
     )
@@ -149,7 +152,7 @@ def run_pipeline(tmp_path, *, advanced_works: bool = True):
             suppliers=SupplierConfig(attribute_field="AdditionalAttribute1")
         ),
         state_path=tmp_path / "state.json",
-        dry_run=True,
+        dry_run=dry_run,
     ).run()
 
 
@@ -162,17 +165,37 @@ def test_advanced_purchase_stock_counts_as_inbound(tmp_path):
     assert line.inbound_base == 10, "advanced purchase was not counted as inbound"
 
 
-def test_unreadable_purchase_aborts_rather_than_under_counting(tmp_path):
-    """Skipping it would understate inbound stock by an unknown amount.
+def test_plan_warns_loudly_but_still_reports(tmp_path):
+    """A read-only run should show its working, not vanish.
 
-    Understated inbound means re-ordering goods already on their way. Better
-    to stop than to produce a plausible-looking duplicate order.
+    The inbound figure is understated by an unknown amount, which matters —
+    but plan writes nothing, and a report you can read and judge beats no
+    report at all. The warning has to be impossible to miss.
     """
-    result = run_pipeline(tmp_path, advanced_works=False)
+    result = run_pipeline(tmp_path, advanced_works=False, dry_run=True)
+
+    assert result.aborted is None
+    assert result.lines, "plan produced nothing at all"
+
+    warning = next(
+        (w for w in result.warnings if "INBOUND STOCK MAY BE UNDERSTATED" in w),
+        None,
+    )
+    assert warning is not None, "the understatement was not flagged"
+    assert "70426f26" in warning or "adv-1" in warning
+
+
+def test_apply_refuses_to_write_from_incomplete_inbound(tmp_path):
+    """Creating a purchase order off partial inbound data costs real money.
+
+    Understated inbound means re-ordering goods already in transit, so the
+    write path stops rather than producing a plausible duplicate.
+    """
+    result = run_pipeline(tmp_path, advanced_works=False, dry_run=False)
 
     assert result.aborted is not None
-    assert "AdvancedPurchase" in result.aborted
-    assert not result.lines
+    assert "Refusing to create purchase orders" in result.aborted
+    assert not result.drafts_created
 
 
 def test_availability_resolves_past_the_documented_path(tmp_path):

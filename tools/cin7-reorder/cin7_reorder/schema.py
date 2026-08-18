@@ -93,6 +93,13 @@ ADVANCED_PURCHASE_CANDIDATES = (
     "AdvancedPurchase",
     "advancedPurchase",
     "advancedpurchase",
+    "AdvancedPurchases",
+    "advancedPurchases",
+    "advanced-purchase",
+    "purchase/advanced",
+    "purchaseAdvanced",
+    "ref/advancedPurchase",
+    "advancedPurchaseOrder",
 )
 
 #: Marker in the 400 body that means "wrong endpoint for this purchase type",
