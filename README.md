@@ -19,20 +19,36 @@ A first `probe` run has settled some of this. Current state:
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
 | `MinimumBeforeReorder` / `ReorderQuantity` on products | ✅ Confirmed live |
 | Supplier attributes | ✅ Found — ten numbered slots, see below |
-| **Bill of materials endpoint** | ❌ **Not found at `v2/BillOfMaterials`.** Blocking |
+| Bills of materials, supplier links, reorder levels | ✅ Reachable — behind include-flags, see below |
 | Whether a draft purchase can be updated | Untested — needs a manual write |
 
-`probe` is still the first command to run. Do not schedule `plan`, and certainly do not run
-`apply`, until the BOM lookup works.
+`probe` is still the first command to run.
 
-### The BOM endpoint is the blocker
+### Cin7 hides nested collections behind opt-in flags
 
-`GET v2/BillOfMaterials` returns a 302 to an HTML error page, which is how Cin7 answers an
-unknown path. Without it there is no way to map a base SKU to the pack SKU that contains it,
-and that mapping is the whole point of this tool.
+This is the single most important thing to know about this API, and it cost several rounds to
+find.
 
-`probe` now tries eight candidate paths across both API versions and reports which, if any,
-return JSON — so the next run should identify the right one rather than needing another guess.
+`BillOfMaterialsProducts`, `ReorderLevels` and `Suppliers` all come back as **empty lists**
+unless you explicitly ask for them — no error, no warning. An empty `BillOfMaterialsProducts`
+is indistinguishable from a product that genuinely has no bill of materials, and an empty
+`Suppliers` makes every product look supplier-less, which would make the whole run skip the
+catalogue while reporting success.
+
+Each collection needs its own flag. `IncludeAll=true` does nothing.
+
+```
+IncludeBOM=true            → BillOfMaterialsProducts
+IncludeReorderLevels=true  → ReorderLevels
+IncludeSuppliers=true      → Suppliers
+```
+
+These live in `PRODUCT_INCLUDE_FLAGS` in `schema.py` and are sent on every product read. A
+test asserts they are present on each call, because nothing at runtime would tell you if they
+went missing.
+
+There is also no `DefaultSupplierID` field on a product — the supplier comes from the
+`Suppliers` collection, which is why the flag matters as much as the BOM one.
 
 ### Supplier attributes are numbered slots
 
