@@ -279,16 +279,16 @@ class Pipeline:
                 "ordered as base units until this is fixed."
             )
 
+        # Collected rather than warned one by one: on a real account there are
+        # a dozen, and eleven copies of the same paragraph pushed everything
+        # else out of view. The explanation belongs in the report once.
         for conflict in index.conflicts:
-            packs = ", ".join(conflict.pack_skus or conflict.pack_product_ids)
             base = products.get(conflict.base_product_id)
-            base_sku = base.sku if base else conflict.base_product_id
-            result.warnings.append(
-                f"{base_sku} is a component of "
-                f"{len(conflict.pack_product_ids)} packs ({packs}); it will "
-                "be skipped until one of them is chosen. Nothing else can be "
-                "done here: ordering the wrong pack means the wrong quantity "
-                "of the wrong product arriving."
+            result.bom_conflicts.append(
+                (
+                    base.sku if base else conflict.base_product_id,
+                    tuple(conflict.pack_skus or conflict.pack_product_ids),
+                )
             )
 
         return index

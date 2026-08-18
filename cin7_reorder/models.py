@@ -274,5 +274,9 @@ class RunResult:
     #: inbound stock. Typed loosely to keep this module free of imports from
     #: the arithmetic; see :class:`cin7_reorder.inbound.InboundAudit`.
     inbound_audit: list = field(default_factory=list)
+    #: ``(base_sku, pack_skus)`` for components belonging to more than one
+    #: pack. A data problem in Cin7, not a run problem — reported together so
+    #: one explanation covers all of them.
+    bom_conflicts: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     api_calls: int = 0
     aborted: Optional[str] = None

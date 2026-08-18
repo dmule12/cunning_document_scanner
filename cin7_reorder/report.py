@@ -39,6 +39,10 @@ _SKIP_LABEL = {
     SkipReason.COVERED_BY_INBOUND: "Covered by stock already on its way",
 }
 
+#: Above this many, the not-automated supplier list is summarised rather than
+#: printed. A report nobody scrolls to the end of is a report nobody reads.
+_MAX_SUPPLIER_NAMES = 25
+
 
 def render_markdown(result: RunResult, *, dry_run: bool) -> str:
     lines: list[str] = []
@@ -106,6 +110,24 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
         for note in result.notes:
             lines.append(f"- {note}")
+        lines.append("")
+
+    # -- BOM conflicts -----------------------------------------------------
+    if result.bom_conflicts:
+        lines.append("## Components belonging to more than one pack")
+        lines.append("")
+        lines.append(
+            f"These **{len(result.bom_conflicts)}** products cannot be "
+            "reordered automatically, because there is no way to tell which "
+            "pack to order. Guessing would mean the wrong quantity of the "
+            "wrong product arriving. Pick one pack per component in Cin7, or "
+            "accept that these stay manual."
+        )
+        lines.append("")
+        lines.append("| Component | Packs it belongs to |")
+        lines.append("| --- | --- |")
+        for base_sku, packs in sorted(result.bom_conflicts):
+            lines.append(f"| {base_sku} | {', '.join(packs)} |")
         lines.append("")
 
     # -- inbound working ---------------------------------------------------
@@ -267,9 +289,21 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
 
     if result.suppliers_skipped:
+        # Named in full only while the list is short enough to read. On a real
+        # account this is every supplier the business has ever paid — 438 of
+        # them, banks and the tax office included — and printing that wall
+        # buries everything above it. The count is the useful part; the names
+        # are in the JSON report for anyone who wants them.
+        skipped = sorted(result.suppliers_skipped)
         lines.append("## Suppliers not automated")
         lines.append("")
-        lines.append(", ".join(sorted(result.suppliers_skipped)))
+        if len(skipped) <= _MAX_SUPPLIER_NAMES:
+            lines.append(", ".join(skipped))
+        else:
+            lines.append(
+                f"{len(skipped)} suppliers are not opted in. Full list in the "
+                "JSON report alongside this one."
+            )
         lines.append("")
 
     return "\n".join(lines)
@@ -283,6 +317,10 @@ def render_json(result: RunResult, *, dry_run: bool) -> str:
         "warnings": result.warnings,
         "notes": result.notes,
         "inbound_audit": [_encode(row) for row in result.inbound_audit],
+        "bom_conflicts": [
+            {"component": sku, "packs": list(packs)}
+            for sku, packs in result.bom_conflicts
+        ],
         "suppliers_considered": result.suppliers_considered,
         "suppliers_skipped": result.suppliers_skipped,
         "drafts_created": result.drafts_created,
