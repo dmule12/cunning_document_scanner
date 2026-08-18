@@ -163,6 +163,9 @@ class PurchaseConfig:
     extra_fields: dict[str, Any] = field(default_factory=dict)
     #: The same, for every line inside the order. A tax rule, typically.
     line_fields: dict[str, Any] = field(default_factory=dict)
+    #: And for the order sub-resource itself, which Cin7 writes separately
+    #: from the purchase header.
+    order_fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,7 @@ class Config:
             purchase=PurchaseConfig(
                 extra_fields=dict(purchase_raw.get("extra_fields") or {}),
                 line_fields=dict(purchase_raw.get("line_fields") or {}),
+                order_fields=dict(purchase_raw.get("order_fields") or {}),
             ),
         )
 

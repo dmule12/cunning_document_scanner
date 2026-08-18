@@ -669,6 +669,47 @@ class Pipeline:
 
     # -- writing -----------------------------------------------------------
 
+    def _write_order_lines(
+        self,
+        *,
+        purchase_id: str,
+        reference: str,
+        lines: list[dict],
+        updating: bool,
+    ) -> None:
+        """Put the lines on a purchase, by POST or PUT as needed.
+
+        Which verb Cin7 wants for an existing order is not documented and
+        differs between accounts, so both are tried. Getting this wrong is
+        cheap — a 400 — while not trying is expensive: a draft that never
+        picks up its new quantities, or worse, a second one alongside it.
+        """
+        payload = schema.build_order_payload(
+            purchase_id=purchase_id,
+            reference=reference,
+            lines=lines,
+            extra=self.config.purchase.order_fields,
+        )
+
+        first, second = (
+            (self.client.put, self.client.post)
+            if updating
+            else (self.client.post, self.client.put)
+        )
+
+        try:
+            first(schema.ENDPOINT_PURCHASE_ORDER, payload)
+            return
+        except Cin7Error as exc:
+            log.info(
+                "First verb rejected for %s on %s (%s); trying the other",
+                schema.ENDPOINT_PURCHASE_ORDER,
+                purchase_id,
+                exc,
+            )
+
+        second(schema.ENDPOINT_PURCHASE_ORDER, payload)
+
     def _write_drafts(
         self, result: RunResult, our_drafts: dict[str, PurchaseOrder]
     ) -> None:
@@ -709,28 +750,27 @@ class Pipeline:
                 supplier_id=supplier_id,
                 location=location,
                 reference=reference,
-                lines=[
-                    schema.build_purchase_line(
-                        product_id=line.order_product_id,
-                        sku=line.order_sku,
-                        quantity=line.quantity,
-                        extra=self.config.purchase.line_fields,
-                    )
-                    for line in lines
-                ],
                 order_date=f"{date.today().isoformat()}T00:00:00",
                 extra=self.config.purchase.extra_fields,
             )
 
+            order_lines = [
+                schema.build_purchase_line(
+                    product_id=line.order_product_id,
+                    sku=line.order_sku,
+                    quantity=line.quantity,
+                    extra=self.config.purchase.line_fields,
+                )
+                for line in lines
+            ]
+
             try:
                 if plan.decision == DraftDecision.UPDATE and plan.purchase_id:
-                    payload["ID"] = plan.purchase_id
-                    self.client.put(schema.ENDPOINT_PURCHASE, payload)
-                    store.set(plan.purchase_id, fingerprint(lines))
-                    result.drafts_updated.append(plan.reference)
+                    purchase_id = plan.purchase_id
+                    updating = True
                 else:
                     response = self.client.post(schema.ENDPOINT_PURCHASE, payload)
-                    new_id = schema.as_str(
+                    purchase_id = schema.as_str(
                         schema.get_first(
                             response if isinstance(response, dict) else {},
                             "ID",
@@ -738,8 +778,31 @@ class Pipeline:
                             "TaskID",
                         )
                     )
-                    if new_id:
-                        store.set(new_id, fingerprint(lines))
+                    updating = False
+                    if not purchase_id:
+                        # Without the id the lines have nowhere to go, and a
+                        # header with no lines is a purchase order for nothing.
+                        result.warnings.append(
+                            f"Created a purchase for {reference} but Cin7 "
+                            "returned no ID, so its lines could not be added. "
+                            "There is now an empty draft in Cin7 to delete."
+                        )
+                        continue
+
+                # The lines are a separate write. A purchase created without
+                # them is a real, visible, empty purchase order — so if this
+                # fails, say which one to go and delete.
+                self._write_order_lines(
+                    purchase_id=purchase_id,
+                    reference=reference,
+                    lines=order_lines,
+                    updating=updating,
+                )
+
+                store.set(purchase_id, fingerprint(lines))
+                if updating:
+                    result.drafts_updated.append(plan.reference)
+                else:
                     result.drafts_created.append(plan.reference)
             except Cin7Error as exc:
                 result.warnings.append(
