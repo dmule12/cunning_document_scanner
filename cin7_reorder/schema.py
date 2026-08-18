@@ -576,6 +576,11 @@ _STATUS_MAP = {
     "ORDERED": PurchaseStatus.AUTHORISED,
     "ORDERING": PurchaseStatus.AUTHORISED,
     "RECEIVING": PurchaseStatus.AUTHORISED,
+    # Open, not closed. An invoice can be entered before the goods arrive, so
+    # INVOICED says something about the paperwork and nothing about the
+    # stock. Whether anything is still coming is settled per line, by
+    # subtracting what has been received from what was ordered.
+    "INVOICED": PurchaseStatus.AUTHORISED,
     "RECEIVED": PurchaseStatus.RECEIVED,
     "COMPLETED": PurchaseStatus.COMPLETED,
     "COMPLETE": PurchaseStatus.COMPLETED,

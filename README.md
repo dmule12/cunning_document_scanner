@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 201 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 203 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -23,6 +23,7 @@ A first `probe` run has settled some of this. Current state:
 | Stock levels | ✅ At `ref/productAvailability`, not the documented `productAvailability` |
 | Advanced and Service purchases | ✅ At `advanced-purchase` — hyphenated, resolved at runtime |
 | Purchase list statuses, supplier keys, order type | ✅ Surveyed across 2312 live orders |
+| Inbound reconstruction | ✅ Working on live data — 4 duplicate orders prevented on the first clean run |
 | Whether a draft purchase can be updated | Untested — needs a manual write |
 
 `probe` is still the first command to run.
@@ -341,7 +342,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-201 tests, offline, well under a second. The ones that matter most:
+203 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
