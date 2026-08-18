@@ -150,6 +150,20 @@ class SupplierConfig:
 
 
 @dataclass(frozen=True)
+class PurchaseConfig:
+    """Extra fields to put on every purchase order this tool creates.
+
+    Cin7 validates a POST one attribute at a time — each rejection names a
+    single missing field and says nothing about the next — and which fields
+    are mandatory varies by account setup. Rather than hard-code a guess,
+    whatever this account demands goes here. `dump --purchase <id>` prints a
+    real order to read the values off.
+    """
+
+    extra_fields: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     max_line_quantity: Optional[float] = 500.0
     max_reorder_quantity_multiple: Optional[float] = 5.0
@@ -185,6 +199,7 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     moq: dict[str, float] = field(default_factory=dict)
     api: ApiConfig = field(default_factory=ApiConfig)
+    purchase: PurchaseConfig = field(default_factory=PurchaseConfig)
 
     def includes_location(self, location: str) -> bool:
         """Whether this run should order for ``location``.
@@ -256,6 +271,9 @@ class Config:
             safety=safety,
             moq={str(k): float(v) for k, v in moq_raw.items()},
             api=api,
+            purchase=PurchaseConfig(
+                extra_fields=dict((data.get("purchase") or {}).get("extra_fields") or {})
+            ),
         )
 
 

@@ -455,3 +455,55 @@ def test_product_without_reorder_fields_yields_an_empty_entry():
 
 def test_product_without_id_yields_nothing():
     assert schema.parse_reorder_parameters({"MinimumBeforeReorder": 10}) == []
+
+
+# ---------------------------------------------------------------------------
+# POST /purchase body
+# ---------------------------------------------------------------------------
+
+
+def test_approach_is_always_sent():
+    """Confirmed live: without it Cin7 answers
+
+        Required Attribute 'Approach' not specified
+
+    It is the Simple-versus-Advanced selector, and nothing in the docs marks
+    it as mandatory. Nothing at runtime would notice it going missing either,
+    hence the test.
+    """
+    payload = schema.build_purchase_payload(
+        supplier_id="s1", location="WA", reference="AUTO-1", lines=[]
+    )
+    assert payload["Approach"] == "SIMPLE"
+
+
+def test_extra_fields_are_merged_in():
+    """Whatever else this account demands, without a code change."""
+    payload = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        lines=[],
+        extra={"TaxRule": "GST on Purchases", "Currency": "AUD"},
+    )
+    assert payload["TaxRule"] == "GST on Purchases"
+    assert payload["Currency"] == "AUD"
+    assert payload["SupplierID"] == "s1"
+
+
+def test_configured_order_block_cannot_discard_the_lines():
+    """The one way `extra` could quietly do real damage.
+
+    An `Order:` key in config replacing ours wholesale would send a purchase
+    order with no lines on it — a valid request, accepted by Cin7, ordering
+    nothing. Merged instead, and Lines from config are ignored outright.
+    """
+    payload = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        lines=[{"ProductID": "p1", "Quantity": 5}],
+        extra={"Order": {"Memo": "raised automatically", "Lines": []}},
+    )
+    assert payload["Order"]["Lines"] == [{"ProductID": "p1", "Quantity": 5}]
+    assert payload["Order"]["Memo"] == "raised automatically"

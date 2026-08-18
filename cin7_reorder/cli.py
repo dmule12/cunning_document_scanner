@@ -37,7 +37,9 @@ from .dump import (
     render,
     render_deep,
     render_flag_sweep,
+    render_purchase,
     render_purchase_survey,
+    show_purchase,
     survey_purchase_list,
     sweep_include_flags,
 )
@@ -124,6 +126,11 @@ def dump(
         "--purchases",
         help="Survey the purchase list: statuses, supplier keys, how many rows would cost a fetch.",
     ),
+    purchase_id: Optional[str] = typer.Option(
+        None,
+        "--purchase",
+        help="Print one purchase order in full, as a template for the ones we create.",
+    ),
     keys_only: bool = typer.Option(
         False,
         "--keys-only",
@@ -142,9 +149,9 @@ def dump(
     on this account, how many can be filtered out before they cost a detail
     call. That stage is the entire cost of a run.
     """
-    if not sku and not product_id and not with_bom and not purchases:
+    if not sku and not product_id and not with_bom and not purchases and not purchase_id:
         typer.secho(
-            "Give --sku, --id, --with-bom, or --purchases.",
+            "Give --sku, --id, --with-bom, --purchases, or --purchase.",
             fg=typer.colors.RED,
             err=True,
         )
@@ -160,6 +167,19 @@ def dump(
     credentials, config = _load(config_path)
 
     with Cin7Client(credentials, config.api, read_only=True) as client:
+        if purchase_id:
+            record, endpoint = show_purchase(client, purchase_id)
+            if record is None:
+                typer.secho(
+                    f"Could not read purchase {purchase_id}: {endpoint}",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            typer.echo(render_purchase(record, endpoint))
+            typer.echo(f"API calls used: {client.call_count}")
+            return
+
         if purchases:
             typer.echo(render_purchase_survey(survey_purchase_list(client)))
             typer.echo(f"API calls used: {client.call_count}")

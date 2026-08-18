@@ -107,6 +107,28 @@ moq: {}
 # ---------------------------------------------------------------------------
 # API behaviour
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Purchase orders we create
+# ---------------------------------------------------------------------------
+purchase:
+  # Extra top-level fields to put on every purchase order this tool creates.
+  #
+  # Cin7 validates a POST one attribute at a time: each rejection names a
+  # single missing field and says nothing about the next, and which fields are
+  # mandatory depends on how the account is set up. So rather than hard-code a
+  # guess, whatever this account demands goes here.
+  #
+  # Run `dump --purchase <id>` against a real purchase order to read the
+  # values off one Cin7 has already accepted.
+  #
+  # SupplierID, Location, Reference and Approach are always sent and do not
+  # belong here. An `Order:` block is merged rather than substituted, and any
+  # `Lines` in it are ignored — replacing them would send an order for nothing.
+  extra_fields: {}
+    # TaxRule: "GST on Purchases"
+    # Currency: "AUD"
+    # Terms: "Net 30"
+
 api:
   page_size: 500
   # Abort the run rather than approach Cin7's 5000/day cap.
