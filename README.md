@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 176 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 182 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -114,13 +114,58 @@ That one stage is the whole cost of a run, and on a busy account it will
 exhaust Cin7's 5000/day allowance and spend the rest of the run being 429'd.
 So the list is filtered before anything is fetched:
 
-- **closed orders** — nothing is on its way, so nothing to count
+- **received orders** — see below; this is the big one
+- **voided and completed orders** — nothing is on its way, so nothing to count
 - **other suppliers' orders** — a run ordering from one supplier does not need
   to read everyone else's paperwork
 
 An order whose list row names no supplier at all is read anyway. Skipping it
 would be cheaper and occasionally wrong, and being wrong here means ordering
 goods that are already on the water.
+
+### `Status` does not tell you whether an order is open
+
+Cin7 leaves a purchase **AUTHORISED for its whole life**. An order placed,
+received and invoiced two years ago still reads as authorised, and tracking of
+what actually arrived lives in a separate field. So `Status` alone makes very
+nearly every purchase the account has ever raised look open — five pages of
+list rows, and a detail call for each.
+
+`CombinedReceivingStatus` is the field that answers the question. It is matched
+against the whole string, never a token, because **"PARTIALLY RECEIVED"
+contains "RECEIVED"** and means the opposite. Getting that backwards would
+close an order with stock still on the water, which understates inbound and
+re-orders goods already paid for — quieter and more expensive than the mistake
+it replaced.
+
+An order with no receiving status at all is treated as open. Silence is not
+evidence of arrival.
+
+### Advanced purchases cost double, once
+
+`/purchase` refuses an Advanced or Service purchase with a 400 naming the right
+endpoint, so reading one the obvious way costs two calls: a refusal and an
+answer. Accounts are not mixed at random, so whichever endpoint served the last
+purchase is tried first. On an account where every order is an Advanced
+purchase the 400 is paid once, on the first order, and never again. The other
+endpoint is still tried on a miss — the preference is an optimisation, never a
+filter.
+
+A response is only accepted if it carries the ID that was asked for. Trying
+endpoints in turn means occasionally asking the wrong one, and a wrong endpoint
+answering `200` with an empty shell would read as a purchase with no lines:
+inbound stock silently disappearing, which is the worst failure available here.
+
+### Seeing it for yourself
+
+```bash
+.venv/bin/python -m cin7_reorder dump --purchases
+```
+
+Reads the list pages only — five calls, no detail fetches — and reports the
+status values your account actually returns, which keys name a supplier, and
+how many open orders would cost a fetch. Run it if a `plan` looks expensive:
+it names the constant in `schema.py` to change.
 
 `api.max_purchase_details` (default 250) is the backstop if what survives the
 filters is still enormous. Reaching it understates inbound stock, so `plan`
@@ -277,7 +322,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-176 tests, offline, well under a second. The ones that matter most:
+182 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while

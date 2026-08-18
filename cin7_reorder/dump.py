@@ -402,6 +402,183 @@ def find_products_with_bom(
     return found, scanned, notes
 
 
+#: Key fragments on a purchaseList row that might name the supplier. The
+#: supplier filter is worth nothing if it reads a key the account does not
+#: return, and the failure is silent: every row looks unattributed, so every
+#: row gets fetched, which is exactly the behaviour the filter exists to stop.
+SUPPLIER_FRAGMENTS = ("supplier", "vendor", "contact")
+STATUS_FRAGMENTS = ("status",)
+
+
+def survey_purchase_list(
+    client: Cin7Client, *, max_pages: int = 20
+) -> dict[str, Any]:
+    """Page ``purchaseList`` and report what there is to filter on.
+
+    Reads list pages only — 500 rows a call, no detail fetches — so this is
+    cheap to run against an account with thousands of orders. That is the
+    point: the expensive stage is deciding which rows deserve a detail call,
+    and this shows what that decision has to work with.
+    """
+    total = 0
+    keys_seen: set[str] = set()
+    statuses: dict[str, int] = {}
+    supplier_key_hits: dict[str, int] = {}
+    sample: Optional[dict] = None
+
+    open_rows = 0
+    parsed_status: dict[str, int] = {}
+    attributed = 0
+    closed_by_receiving = 0
+
+    for page in range(1, max_pages + 1):
+        result = client.try_get(
+            schema.ENDPOINT_PURCHASE_LIST, page=page, limit=500
+        )
+        if not result.ok:
+            break
+
+        records = schema.extract_list(result.payload)
+        if not records:
+            break
+
+        for record in records:
+            total += 1
+            if sample is None:
+                sample = record
+            keys_seen.update(str(k) for k in record)
+
+            for key, value in record.items():
+                lowered = str(key).lower()
+                if any(f in lowered for f in SUPPLIER_FRAGMENTS):
+                    if value not in (None, ""):
+                        supplier_key_hits[str(key)] = (
+                            supplier_key_hits.get(str(key), 0) + 1
+                        )
+                if any(f in lowered for f in STATUS_FRAGMENTS):
+                    label = f"{key}={value}"
+                    statuses[label] = statuses.get(label, 0) + 1
+
+            entry = schema.parse_purchase_list_entry(record)
+            name = entry.status.name
+            parsed_status[name] = parsed_status.get(name, 0) + 1
+            if entry.is_closed:
+                if entry.status not in schema.CLOSED_STATUSES:
+                    closed_by_receiving += 1
+            else:
+                open_rows += 1
+                if entry.names_a_supplier:
+                    attributed += 1
+
+        if len(records) < 500:
+            break
+
+    return {
+        "total": total,
+        "keys": sorted(keys_seen),
+        "statuses": statuses,
+        "supplier_key_hits": supplier_key_hits,
+        "sample": sample,
+        "open_rows": open_rows,
+        "parsed_status": parsed_status,
+        "attributed": attributed,
+        "closed_by_receiving": closed_by_receiving,
+    }
+
+
+def render_purchase_survey(survey: dict[str, Any]) -> str:
+    out = ["", "=" * 78, "PURCHASE LIST SURVEY", "=" * 78, ""]
+
+    total = survey["total"]
+    if not total:
+        out.append("  No purchase orders returned at all.")
+        out.append("")
+        return "\n".join(out)
+
+    open_rows = survey["open_rows"]
+    attributed = survey["attributed"]
+
+    out.append(f"  {total} purchase order(s) on the list endpoint.")
+    out.append(f"  {open_rows} of them read as open, so each may cost a detail call.")
+    if survey["closed_by_receiving"]:
+        out.append(
+            f"  {survey['closed_by_receiving']} were closed by their receiving "
+            "status alone —\n  Cin7 leaves those AUTHORISED forever, so Status "
+            "would have called them open."
+        )
+    out.append("")
+
+    out.append("  STATUS VALUES AS RETURNED")
+    for label, count in sorted(
+        survey["statuses"].items(), key=lambda kv: -kv[1]
+    ):
+        out.append(f"    {count:>6}  {label}")
+    out.append("")
+
+    out.append("  HOW parse_status READ THEM")
+    for name, count in sorted(
+        survey["parsed_status"].items(), key=lambda kv: -kv[1]
+    ):
+        marker = ""
+        if name == "UNKNOWN":
+            marker = "  ← not recognised, treated as open"
+        out.append(f"    {count:>6}  {name}{marker}")
+    out.append("")
+
+    out.append("  SUPPLIER-ISH KEYS WITH VALUES")
+    if survey["supplier_key_hits"]:
+        for key, count in sorted(
+            survey["supplier_key_hits"].items(), key=lambda kv: -kv[1]
+        ):
+            out.append(f"    {count:>6}  {key}")
+    else:
+        out.append("    NONE. No key on any row names a supplier.")
+    out.append("")
+
+    out.append("  WHAT THE SUPPLIER FILTER CAN DO WITH THAT")
+    if not open_rows:
+        out.append("    Nothing to filter — no open orders.")
+    elif attributed == open_rows:
+        out.append(
+            f"    All {open_rows} open order(s) name a supplier, so only the "
+            "ones\n    belonging to opted-in suppliers cost a detail call."
+        )
+    elif attributed == 0:
+        out.append(
+            f"    NONE of the {open_rows} open order(s) name a supplier the "
+            "parser\n    recognises, so every one of them has to be fetched. "
+            "That is\n    roughly the whole cost of a run.\n\n"
+            "    Fix: find the supplier key in the sample row below and add it "
+            "to\n    parse_purchase_list_entry in schema.py."
+        )
+    else:
+        out.append(
+            f"    {attributed} of {open_rows} open order(s) name a supplier; "
+            f"the other\n    {open_rows - attributed} must be fetched to find "
+            "out who they are from."
+        )
+    out.append("")
+
+    out.append("  ALL KEYS ON A ROW")
+    for key in survey["keys"]:
+        out.append(f"    {key}")
+    out.append("")
+
+    out.append("-" * 78)
+    out.append("SAMPLE ROW")
+    out.append("-" * 78)
+    out.append(json.dumps(survey["sample"], indent=2, default=str, sort_keys=True))
+    out.append("")
+    out.append(
+        "NOTE: this is one real purchase order, including supplier and possibly "
+        "totals.\nTrim anything you would rather not share before pasting it "
+        "anywhere."
+    )
+    out.append("")
+
+    return "\n".join(out)
+
+
 def interesting_keys(record: dict) -> list[str]:
     """Keys that might carry a pack-to-base-unit relationship."""
     found = []

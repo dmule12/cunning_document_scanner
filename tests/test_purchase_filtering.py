@@ -170,6 +170,67 @@ def test_closed_orders_still_cost_nothing(tmp_path):
     assert fetched == ["ours-1"]
 
 
+def test_a_received_order_costs_nothing_even_while_still_authorised(tmp_path):
+    """Cin7 never moves Status off AUTHORISED.
+
+    An order placed, received and invoiced two years ago still reads as
+    AUTHORISED, so Status alone makes nearly every purchase the account has
+    ever raised look open. On a real account that was five pages of list rows
+    and a detail call for each.
+    """
+    rows = [
+        {
+            "ID": f"done-{n}",
+            "OrderStatus": "AUTHORISED",
+            "CombinedReceivingStatus": "RECEIVED",
+            "SupplierID": OURS,
+        }
+        for n in range(50)
+    ]
+    rows.append(
+        {
+            "ID": "live-1",
+            "OrderStatus": "AUTHORISED",
+            "CombinedReceivingStatus": "NOT RECEIVED",
+            "SupplierID": OURS,
+        }
+    )
+
+    _result, fetched = run(tmp_path, rows)
+
+    assert fetched == ["live-1"]
+
+
+def test_partially_received_is_not_received(tmp_path):
+    """The string trap, and the expensive direction to get it wrong.
+
+    "PARTIALLY RECEIVED" contains "RECEIVED". Matching on a substring or a
+    token would close an order that still has stock on the water, which
+    understates inbound and re-orders goods already paid for.
+    """
+    rows = [
+        {
+            "ID": "part-1",
+            "OrderStatus": "AUTHORISED",
+            "CombinedReceivingStatus": "PARTIALLY RECEIVED",
+            "SupplierID": OURS,
+        }
+    ]
+
+    _result, fetched = run(tmp_path, rows)
+
+    assert fetched == ["part-1"], "an order still in transit was dropped"
+
+
+def test_an_order_with_no_receiving_status_is_treated_as_open(tmp_path):
+    """Silence is not evidence of arrival."""
+    rows = [{"ID": "quiet-1", "OrderStatus": "AUTHORISED", "SupplierID": OURS}]
+
+    _result, fetched = run(tmp_path, rows)
+
+    assert fetched == ["quiet-1"]
+
+
 def test_coverage_is_reported_not_silent(tmp_path):
     """A number computed from a partial view has to say so.
 
@@ -206,6 +267,155 @@ def test_plan_warns_when_it_runs_out_of_purchase_reads(tmp_path):
     assert result.aborted is None, "plan should still produce a report"
     assert any("INBOUND STOCK MAY BE UNDERSTATED" in w for w in result.warnings)
     assert any("max_purchase_details" in w for w in result.warnings)
+
+
+def build_advanced(rows: list[dict], *, simple_ids: set[str] = frozenset()):
+    """A Cin7 where purchases are Advanced unless listed in ``simple_ids``.
+
+    ``/purchase`` refuses an Advanced purchase with a 400 naming the right
+    endpoint, so reading one the naive way costs two calls: a refusal and an
+    answer.
+    """
+    handler, fetched = build(rows)
+    calls: list[str] = []
+
+    deprecated = (
+        '[{"ErrorCode":400,"Exception":"This endpoint is deprecated and does '
+        "not support Advanced Purchase and Service Purchase. Please use "
+        'AdvancedPurchase endpoint"}]'
+    )
+
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        tail = request.url.path.rsplit("/", 1)[-1]
+        purchase_id = request.url.params.get("ID")
+
+        if tail == "purchase":
+            calls.append(f"purchase:{purchase_id}")
+            if purchase_id in simple_ids:
+                return handler(request)
+            return httpx.Response(400, text=deprecated)
+
+        if tail == "advanced-purchase":
+            calls.append(f"advanced:{purchase_id}")
+            if purchase_id in simple_ids:
+                return httpx.Response(400, text="not an advanced purchase")
+            return httpx.Response(
+                200,
+                json={
+                    "ID": purchase_id,
+                    "OrderStatus": "AUTHORISED",
+                    "Location": "Main",
+                    "Order": {"Lines": [{"ProductID": "p1", "Quantity": 1}]},
+                },
+            )
+
+        if tail.lower().replace("-", "") == "advancedpurchase":
+            # Every other spelling 404s, which Cin7 serves as a redirect to an
+            # HTML error page rather than a status code.
+            return httpx.Response(200, text="<html>Object moved</html>")
+
+        return handler(request)
+
+    return wrapped, calls
+
+
+def run_advanced(tmp_path, rows, *, simple_ids=frozenset()):
+    handler, calls = build_advanced(rows, simple_ids=simple_ids)
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=2000),
+        read_only=True,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        config=Config(suppliers=SupplierConfig(attribute_field="AdditionalAttribute1")),
+        state_path=tmp_path / "state.json",
+        dry_run=True,
+    ).run()
+    return result, calls
+
+
+def test_advanced_purchases_stop_paying_the_400_tax(tmp_path):
+    """Every order on the account is Advanced. Don't ask /purchase each time.
+
+    The naive order costs two calls per purchase: a 400 telling us the
+    endpoint is wrong, then the answer. Accounts are not mixed at random —
+    whichever endpoint served the last one is overwhelmingly likely to serve
+    the next.
+    """
+    rows = [
+        {"ID": f"ours-{n}", "OrderStatus": "AUTHORISED", "SupplierID": OURS}
+        for n in range(6)
+    ]
+
+    result, calls = run_advanced(tmp_path, rows)
+
+    assert result.aborted is None
+    refusals = [c for c in calls if c.startswith("purchase:")]
+    assert len(refusals) == 1, (
+        f"paid the 400 tax {len(refusals)} times; it should be paid once, "
+        "on the first purchase, and never again"
+    )
+    assert len([c for c in calls if c.startswith("advanced:")]) == 6
+
+
+def test_a_simple_purchase_among_advanced_ones_is_still_read(tmp_path):
+    """The preference is an optimisation, never a filter.
+
+    Once the run prefers the Advanced endpoint, a plain purchase order will
+    be refused by it — and must then fall back, not be dropped. A dropped
+    order is inbound stock that vanishes.
+    """
+    rows = [
+        {"ID": "adv-1", "OrderStatus": "AUTHORISED", "SupplierID": OURS},
+        {"ID": "simple-1", "OrderStatus": "AUTHORISED", "SupplierID": OURS},
+        {"ID": "adv-2", "OrderStatus": "AUTHORISED", "SupplierID": OURS},
+    ]
+
+    result, _calls = run_advanced(tmp_path, rows, simple_ids={"simple-1"})
+
+    assert result.aborted is None
+    assert not [
+        w for w in result.warnings if "INBOUND STOCK MAY BE UNDERSTATED" in w
+    ], "an order was dropped rather than fetched from the other endpoint"
+    line = next(ln for ln in result.lines if ln.base_sku == "CUP")
+    assert line.inbound_base == 3, "all three orders should count as inbound"
+
+
+def test_a_response_for_a_different_purchase_is_rejected(tmp_path):
+    """Trying endpoints in turn means occasionally asking the wrong one.
+
+    A wrong endpoint answering 200 with something unrelated would be read as
+    a purchase with no lines — which silently removes stock from the inbound
+    figure and re-orders goods already on their way. Worse than an error.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        base, _ = build([{"ID": "ours-1", "OrderStatus": "AUTHORISED", "SupplierID": OURS}])
+        if request.url.path.rsplit("/", 1)[-1] == "purchase":
+            return httpx.Response(
+                200, json={"ID": "somebody-elses-order", "Order": {"Lines": []}}
+            )
+        return base(request)
+
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=2000),
+        read_only=True,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        config=Config(suppliers=SupplierConfig(attribute_field="AdditionalAttribute1")),
+        state_path=tmp_path / "state.json",
+        dry_run=True,
+    ).run()
+
+    assert any(
+        "INBOUND STOCK MAY BE UNDERSTATED" in w for w in result.warnings
+    ), "a mismatched purchase was accepted as though it were the right one"
 
 
 def test_apply_refuses_when_it_runs_out_of_purchase_reads(tmp_path):

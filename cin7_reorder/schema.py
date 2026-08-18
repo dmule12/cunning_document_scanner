@@ -582,6 +582,16 @@ CLOSED_STATUSES = frozenset(
     {PurchaseStatus.VOIDED, PurchaseStatus.RECEIVED, PurchaseStatus.COMPLETED}
 )
 
+#: Receiving statuses on a list row that mean everything has arrived.
+#:
+#: Matched against the whole normalised string and never against a token,
+#: because "PARTIALLY RECEIVED" contains "RECEIVED" and means the opposite —
+#: stock is still coming, and treating it as closed would understate inbound
+#: and re-order goods in transit.
+FULLY_RECEIVED_STATUSES = frozenset(
+    {"RECEIVED", "FULLY RECEIVED", "FULL", "COMPLETE", "COMPLETED"}
+)
+
 
 def parse_status(raw: Any) -> PurchaseStatus:
     text = (as_str(raw) or "").upper()
@@ -714,6 +724,26 @@ class PurchaseListEntry:
     reference: Optional[str] = None
     supplier_id: Optional[str] = None
     supplier_name: Optional[str] = None
+    receiving_status: Optional[str] = None
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether this order can have no more stock on its way.
+
+        ``Status`` alone is not enough. Cin7 leaves a purchase AUTHORISED for
+        its whole life and tracks arrival separately, so an order placed,
+        received and invoiced two years ago still reads as authorised. Taking
+        ``Status`` at face value makes almost every purchase the account has
+        ever raised look open — and each one then costs a detail call.
+
+        The receiving status is what actually says whether anything is still
+        coming.
+        """
+        if self.status in CLOSED_STATUSES:
+            return True
+        if self.receiving_status is None:
+            return False
+        return self.receiving_status.strip().upper() in FULLY_RECEIVED_STATUSES
 
     @property
     def names_a_supplier(self) -> bool:
@@ -751,6 +781,15 @@ def parse_purchase_list_entry(payload: Mapping[str, Any]) -> PurchaseListEntry:
         ),
         supplier_id=as_str(get_first(payload, "SupplierID", "SupplierId")),
         supplier_name=as_str(get_first(payload, "Supplier", "SupplierName")),
+        receiving_status=as_str(
+            get_first(
+                payload,
+                "CombinedReceivingStatus",
+                "ReceivingStatus",
+                "ReceiptStatus",
+                "StockReceivedStatus",
+            )
+        ),
     )
 
 

@@ -20,7 +20,7 @@ availability row as zeros is what keeps those visible.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -55,6 +55,26 @@ from .reorderpoints import resolve as resolve_reorder_point
 log = logging.getLogger(__name__)
 
 
+def _is_purchase(payload: object, purchase_id: str) -> bool:
+    """Whether a response really is the purchase that was asked for.
+
+    Trying endpoints in turn means occasionally asking the wrong one, and a
+    wrong endpoint that answers 200 with something unrelated — or with an
+    empty shell — would be read as a purchase with no lines. That is the worst
+    possible failure here: it silently removes stock from the inbound figure,
+    and the run re-orders goods already on their way.
+
+    A payload that carries no ID at all is accepted, since not every Cin7
+    response echoes one back; a payload carrying a *different* ID is not.
+    """
+    if not isinstance(payload, dict):
+        return False
+    returned = schema.as_str(schema.get_first(payload, "ID", "PurchaseID", "TaskID"))
+    if returned is None:
+        return True
+    return returned.strip().lower() == purchase_id.strip().lower()
+
+
 def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> bool:
     """Whether a supplier is named by the rollout pin.
 
@@ -81,6 +101,12 @@ class Pipeline:
     config: Config
     state_path: Path
     dry_run: bool = True
+
+    #: Whether to try the Advanced/Service purchase endpoint before
+    #: ``/purchase``. Set by whichever one last served a purchase. Purely an
+    #: optimisation — both are still tried — but on an account where every
+    #: order is an Advanced purchase it halves the cost of the whole run.
+    _prefer_advanced: bool = field(default=False, init=False, repr=False)
 
     def run(self) -> RunResult:
         result = RunResult()
@@ -311,7 +337,7 @@ class Pipeline:
             entry = schema.parse_purchase_list_entry(row)
             if not entry.id:
                 continue
-            if entry.status in schema.CLOSED_STATUSES:
+            if entry.is_closed:
                 continue
             if not entry.is_for_supplier(supplier_ids, supplier_names):
                 other_suppliers += 1
@@ -407,6 +433,23 @@ class Pipeline:
             "what is already on its way."
         )
 
+    def _read_advanced_purchase(self, purchase_id: str) -> Optional[dict]:
+        """The Advanced/Service purchase endpoint, or ``None`` if it won't serve.
+
+        Resolution is cached on the client, so this costs one call after the
+        first purchase of the run.
+        """
+        _endpoint, response = self.client.get_resolved(
+            schema.ADVANCED_PURCHASE_CANDIDATES, ID=purchase_id
+        )
+        if response is None or not response.ok:
+            return None
+        if not _is_purchase(response.payload, purchase_id):
+            return None
+
+        self._prefer_advanced = True
+        return response.payload
+
     def _fetch_purchase(
         self, purchase_id: str, result: RunResult
     ) -> Optional[dict]:
@@ -426,21 +469,29 @@ class Pipeline:
         data costs real money. ``plan`` continues with a prominent warning,
         because a report you can read and judge is more useful than no report
         at all, and it writes nothing either way.
+
+        Accounts tend to use one purchase type for nearly everything, so
+        whichever endpoint served the last purchase is tried first. On an
+        account where every order is an Advanced purchase that halves the
+        cost of this stage, because ``/purchase`` answers each one with a 400
+        before answering anything useful.
         """
+        if self._prefer_advanced:
+            payload = self._read_advanced_purchase(purchase_id)
+            if payload is not None:
+                return payload
+
         response = self.client.try_get(schema.ENDPOINT_PURCHASE, ID=purchase_id)
-        if response.ok and isinstance(response.payload, dict):
+        if response.ok and _is_purchase(response.payload, purchase_id):
+            self._prefer_advanced = False
             return response.payload
 
         reason = response.detail or "unknown error"
 
         if schema.DEPRECATED_ENDPOINT_MARKER in reason:
-            endpoint = self.client.resolve_endpoint(
-                schema.ADVANCED_PURCHASE_CANDIDATES, ID=purchase_id
-            )
-            if endpoint is not None:
-                advanced = self.client.try_get(endpoint, ID=purchase_id)
-                if advanced.ok and isinstance(advanced.payload, dict):
-                    return advanced.payload
+            payload = self._read_advanced_purchase(purchase_id)
+            if payload is not None:
+                return payload
             reason = (
                 "it is an Advanced or Service purchase, and none of "
                 f"{', '.join(schema.ADVANCED_PURCHASE_CANDIDATES)} served it"

@@ -34,6 +34,10 @@ CALLS_PER_SECOND = 3
 CALLS_PER_MINUTE = 60
 MAX_RETRIES = 5
 
+#: Distinguishes "not resolved yet" from "resolved to nothing", both of which
+#: the endpoint cache has to be able to hold.
+_UNSET = object()
+
 
 class Cin7Error(RuntimeError):
     """An API call failed in a way the run cannot recover from."""
@@ -184,19 +188,23 @@ class Cin7Client:
             path=url, ok=True, status=response.status_code, payload=payload
         )
 
-    def resolve_endpoint(
+    def get_resolved(
         self, candidates: tuple[str, ...], **params: Any
-    ) -> Optional[str]:
-        """The first candidate path that returns JSON, or ``None``.
+    ) -> tuple[Optional[str], Optional["ProbeResult"]]:
+        """Resolve a path and return what it answered, in one go.
 
-        Cin7 answers an unknown path with a 302 to an HTML error page rather
-        than a 404, so "did this return JSON" is the only reliable test. The
-        result is cached: resolution costs one wasted call per miss, and the
-        same endpoint gets hit repeatedly during a run.
+        Resolution has to actually call an endpoint to find out whether it
+        works, which means it is holding the response when it succeeds.
+        Discarding that and asking again doubles the cost of the first call
+        of every run — and of every run where there is only one.
         """
         key = candidates[0]
-        if key in self._endpoint_cache:
-            return self._endpoint_cache[key]
+        cached = self._endpoint_cache.get(key, _UNSET)
+
+        if cached is not _UNSET:
+            if cached is None:
+                return None, None
+            return cached, self.try_get(cached, **params)
 
         for path in candidates:
             result = self.try_get(path, **params)
@@ -208,10 +216,28 @@ class Cin7Client:
                 if path != candidates[0]:
                     log.info("Resolved endpoint %r -> %r", candidates[0], path)
                 self._endpoint_cache[key] = path
-                return path
+                return path, result
 
         self._endpoint_cache[key] = None
-        return None
+        return None, None
+
+    def resolve_endpoint(
+        self, candidates: tuple[str, ...], **params: Any
+    ) -> Optional[str]:
+        """The first candidate path that returns JSON, or ``None``.
+
+        Cin7 answers an unknown path with a 302 to an HTML error page rather
+        than a 404, so "did this return JSON" is the only reliable test. The
+        result is cached, since resolution costs one wasted call per miss and
+        the same endpoint gets hit repeatedly during a run.
+
+        Use :meth:`get_resolved` where the response itself is wanted; this
+        discards it, and on a cache hit will fetch it only to throw it away.
+        """
+        if candidates[0] in self._endpoint_cache:
+            return self._endpoint_cache[candidates[0]]
+        path, _result = self.get_resolved(candidates, **params)
+        return path
 
     @property
     def base_url_v1(self) -> str:
