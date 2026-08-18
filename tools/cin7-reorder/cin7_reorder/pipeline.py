@@ -716,6 +716,7 @@ class Pipeline:
                     )
                     for line in lines
                 ],
+                extra=self.config.purchase.extra_fields,
             )
 
             try:

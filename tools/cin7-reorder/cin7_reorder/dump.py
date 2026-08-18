@@ -18,7 +18,7 @@ decides the shape of the rest of the build.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from . import schema
 from .client import Cin7Client
@@ -576,6 +576,133 @@ def render_purchase_survey(survey: dict[str, Any]) -> str:
     )
     out.append("")
 
+    return "\n".join(out)
+
+
+#: Top-level fields a POST /purchase is known or likely to require, beyond the
+#: ones this tool already sends. Cin7 rejects one missing attribute at a time
+#: and says nothing about the next, so discovering them by trial costs a round
+#: trip each. Reading them off a purchase the account already has is faster and
+#: more reliable than guessing which of Cin7's many optional fields this
+#: particular account treats as mandatory.
+PURCHASE_POST_FIELDS = (
+    "Approach",
+    "SupplierID",
+    "Location",
+    "Currency",
+    "TaxRule",
+    "TaxCalculation",
+    "Terms",
+    "PaymentTerm",
+    "Contact",
+    "Phone",
+    "Email",
+    "BillingAddress",
+    "ShippingAddress",
+    "BlindReceipt",
+    "OrderDate",
+    "RequiredBy",
+    "InventoryAccount",
+    "Account",
+    "Brand",
+)
+
+#: The same question for a line inside `Order.Lines`.
+PURCHASE_LINE_FIELDS = (
+    "ProductID",
+    "SKU",
+    "Name",
+    "Quantity",
+    "Price",
+    "Discount",
+    "Tax",
+    "TaxRule",
+    "Account",
+    "Comment",
+    "SupplierSKU",
+)
+
+
+def show_purchase(client: Cin7Client, purchase_id: str) -> tuple[Optional[dict], str]:
+    """One purchase in full, from whichever endpoint serves it."""
+    result = client.try_get(schema.ENDPOINT_PURCHASE, ID=purchase_id)
+    if result.ok and isinstance(result.payload, dict):
+        return result.payload, schema.ENDPOINT_PURCHASE
+
+    endpoint, advanced = client.get_resolved(
+        schema.ADVANCED_PURCHASE_CANDIDATES, ID=purchase_id
+    )
+    if advanced is not None and advanced.ok and isinstance(advanced.payload, dict):
+        return advanced.payload, endpoint or "?"
+
+    return None, result.detail or "not found"
+
+
+def render_purchase(record: dict, endpoint: str) -> str:
+    """Show a purchase as a template for the one we need to create.
+
+    Two columns matter: what this order carries, and whether we are sending
+    it. Everything present here and missing from ours is a candidate for the
+    next 400.
+    """
+    out = ["", "=" * 78, f"PURCHASE RECORD — from /{endpoint}", "=" * 78, ""]
+
+    sending = {"SupplierID", "Location", "Reference", "Approach"}
+
+    out.append("  TOP-LEVEL FIELDS")
+    out.append(f"  {'field':<22} {'we send':<9} value")
+    out.append("  " + "-" * 74)
+    for key in PURCHASE_POST_FIELDS:
+        if key not in record:
+            continue
+        value = json.dumps(record.get(key), default=str)
+        if len(value) > 40:
+            value = value[:40] + "…"
+        out.append(f"  {key:<22} {'yes' if key in sending else 'NO':<9} {value}")
+    out.append("")
+
+    missing = [k for k in PURCHASE_POST_FIELDS if k in record and k not in sending]
+    if missing:
+        out.append("  Not currently sent, and present on a real order:")
+        out.append("    " + ", ".join(missing))
+        out.append("")
+        out.append(
+            "  Add whichever Cin7 insists on under `purchase.extra_fields` in\n"
+            "  config.yaml. It needs the value, not just the name."
+        )
+        out.append("")
+
+    lines = schema.get_first(record, *schema.PURCHASE_ORDER_CONTAINER_KEYS, default={})
+    raw_lines = (
+        schema.get_first(lines, *schema.PURCHASE_ORDER_LINE_KEYS, default=[])
+        if isinstance(lines, Mapping)
+        else []
+    )
+    if isinstance(raw_lines, list) and raw_lines:
+        out.append("  FIRST ORDER LINE")
+        first = raw_lines[0]
+        line_sending = {"ProductID", "SKU", "Quantity"}
+        for key in PURCHASE_LINE_FIELDS:
+            if key not in first:
+                continue
+            value = json.dumps(first.get(key), default=str)
+            if len(value) > 40:
+                value = value[:40] + "…"
+            out.append(
+                f"  {key:<22} {'yes' if key in line_sending else 'NO':<9} {value}"
+            )
+        out.append("")
+
+    out.append("-" * 78)
+    out.append("FULL RECORD")
+    out.append("-" * 78)
+    out.append(json.dumps(record, indent=2, default=str, sort_keys=True))
+    out.append("")
+    out.append(
+        "NOTE: this is a real purchase order, including supplier, prices and\n"
+        "possibly addresses. Trim before pasting it anywhere."
+    )
+    out.append("")
     return "\n".join(out)
 
 

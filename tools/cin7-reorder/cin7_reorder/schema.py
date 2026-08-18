@@ -842,28 +842,56 @@ def parse_purchase_list_entry(payload: Mapping[str, Any]) -> PurchaseListEntry:
 # ---------------------------------------------------------------------------
 
 
+#: Cin7's Simple-versus-Advanced selector, required on every POST /purchase.
+#: Confirmed live: omitting it answers
+#: ``Required Attribute 'Approach' not specified``.
+#:
+#: SIMPLE is right for what this tool raises. An Advanced purchase splits
+#: ordering, receipting and invoicing into separate authorisable stages, which
+#: is machinery for a draft nobody has sent yet.
+PURCHASE_APPROACH = "SIMPLE"
+
+
 def build_purchase_payload(
     *,
     supplier_id: str,
     location: str,
     reference: str,
     lines: Sequence[Mapping[str, Any]],
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``POST /purchase`` body.
 
-    Unverified: Cin7's Purchase POST schema includes many more fields than
-    this (tax rules, terms, accounts), and a real account may reject a body
-    this sparse. ``probe`` reports the shape of an existing purchase so the
-    required extras can be added.
+    Cin7 validates this one attribute at a time — each rejection names a
+    single missing field and says nothing about the next — so the required
+    set has to be discovered by trial. ``dump --purchase <id>`` prints a real
+    purchase from the account, which is a better source than guessing: the
+    fields an existing order carries are the fields this account needs.
+
+    ``extra`` is merged in last, so anything else the account turns out to
+    demand can be added from `purchase.extra_fields` in config.yaml without a
+    code change.
     """
-    return {
+    payload: dict[str, Any] = {
         "SupplierID": supplier_id,
         "Location": location,
         "Reference": reference,
+        "Approach": PURCHASE_APPROACH,
         "Order": {
             "Lines": [dict(line) for line in lines],
         },
     }
+    if extra:
+        for key, value in extra.items():
+            if key == "Order" and isinstance(value, Mapping):
+                # Merge rather than replace, or a configured Order block would
+                # silently discard every line we just computed.
+                order = dict(payload["Order"])
+                order.update({k: v for k, v in value.items() if k != "Lines"})
+                payload["Order"] = order
+                continue
+            payload[key] = value
+    return payload
 
 
 def build_purchase_line(
