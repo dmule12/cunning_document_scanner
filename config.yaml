@@ -90,3 +90,10 @@ api:
   # Abort the run rather than approach Cin7's 5000/day cap.
   daily_call_budget: 4000
   timeout_seconds: 60
+  # Purchase orders are the only thing read one at a time — one call each, two
+  # for an Advanced purchase, which answers a 400 before it answers anything
+  # useful. The run already skips closed orders and other suppliers' orders;
+  # this is the backstop if what is left is still enormous. Hitting it means
+  # inbound stock is understated, so `plan` says so loudly and `apply` refuses
+  # to write.
+  max_purchase_details: 250

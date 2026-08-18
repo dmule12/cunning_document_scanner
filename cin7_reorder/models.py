@@ -256,5 +256,10 @@ class RunResult:
     drafts_updated: list[str] = field(default_factory=list)
     drafts_left_alone: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Things worth knowing that are not problems — how much of the account
+    #: the run actually looked at, and what it deliberately did not. Kept
+    #: apart from ``warnings`` so that a run with nothing wrong with it does
+    #: not report warnings, which is how warnings stop being read.
+    notes: list[str] = field(default_factory=list)
     api_calls: int = 0
     aborted: Optional[str] = None

@@ -31,6 +31,7 @@ a valid number.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from .models import (
@@ -697,18 +698,60 @@ def _sum_received_quantities(payload: Mapping[str, Any]) -> dict[str, float]:
     return totals
 
 
-def parse_purchase_list_entry(payload: Mapping[str, Any]) -> tuple[Optional[str], PurchaseStatus, Optional[str]]:
-    """Pull (id, status, reference) from a purchaseList row.
+@dataclass(frozen=True)
+class PurchaseListEntry:
+    """One row of ``purchaseList``, before any detail is fetched.
 
-    Cheap pre-filter: the list endpoint tells us which purchases are worth
-    fetching in full, so closed ones never cost a detail call.
+    Every field here is a chance to avoid a detail call. On a real account
+    the list runs to thousands of rows and each detail costs one request —
+    two for Advanced purchases, which answer a 400 first — so filtering here
+    is the difference between a run that finishes and one that exhausts the
+    daily quota.
     """
-    purchase_id = as_str(get_first(payload, "ID", "PurchaseID", "TaskID", "Id"))
-    raw_status = get_first(
-        payload, "OrderStatus", "Status", "CombinedReceivingStatus"
+
+    id: Optional[str]
+    status: PurchaseStatus
+    reference: Optional[str] = None
+    supplier_id: Optional[str] = None
+    supplier_name: Optional[str] = None
+
+    @property
+    def names_a_supplier(self) -> bool:
+        """Whether the row says anything at all about who it is from."""
+        return bool(self.supplier_id or self.supplier_name)
+
+    def is_for_supplier(
+        self, supplier_ids: Iterable[str], names: Iterable[str]
+    ) -> bool:
+        """Whether this row belongs to one of the suppliers in scope.
+
+        Returns ``True`` when the row carries no supplier information at all:
+        the caller must then fetch the detail to find out, and wrongly
+        skipping an open order would understate inbound stock.
+
+        ``names`` are compared lower-cased, because the list endpoint and the
+        supplier endpoint do not reliably agree on capitalisation.
+        """
+        if self.supplier_id and self.supplier_id in set(supplier_ids):
+            return True
+        if self.supplier_name and self.supplier_name.strip().lower() in set(names):
+            return True
+        return not self.names_a_supplier
+
+
+def parse_purchase_list_entry(payload: Mapping[str, Any]) -> PurchaseListEntry:
+    """Pull the pre-filterable fields from a purchaseList row."""
+    return PurchaseListEntry(
+        id=as_str(get_first(payload, "ID", "PurchaseID", "TaskID", "Id")),
+        status=parse_status(
+            get_first(payload, "OrderStatus", "Status", "CombinedReceivingStatus")
+        ),
+        reference=as_str(
+            get_first(payload, "Reference", "PurchaseOrderNumber", "Ref")
+        ),
+        supplier_id=as_str(get_first(payload, "SupplierID", "SupplierId")),
+        supplier_name=as_str(get_first(payload, "Supplier", "SupplierName")),
     )
-    reference = as_str(get_first(payload, "Reference", "PurchaseOrderNumber", "Ref"))
-    return purchase_id, parse_status(raw_status), reference
 
 
 # ---------------------------------------------------------------------------
