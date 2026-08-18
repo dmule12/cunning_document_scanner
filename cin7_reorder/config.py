@@ -172,15 +172,33 @@ class ApiConfig:
 @dataclass(frozen=True)
 class Config:
     suppliers: SupplierConfig = field(default_factory=SupplierConfig)
+    #: Allowlist. Empty means every location.
     locations_include: tuple[str, ...] = ()
+    #: Denylist, applied after the allowlist and winning over it.
+    #:
+    #: Worth having both. An allowlist silently ignores a warehouse opened
+    #: later — the run would simply never order for it, and nothing in the
+    #: report would say so. A denylist lets a new warehouse in by default,
+    #: where the worst case is a draft purchase order somebody reads and
+    #: deletes. Visible mistakes beat invisible ones.
+    locations_exclude: tuple[str, ...] = ()
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     moq: dict[str, float] = field(default_factory=dict)
     api: ApiConfig = field(default_factory=ApiConfig)
 
     def includes_location(self, location: str) -> bool:
+        """Whether this run should order for ``location``.
+
+        Excluding a location excludes its per-location reorder points with
+        it: :func:`cin7_reorder.reorderpoints.resolve` only ever matches a
+        location-level minimum against the location being evaluated, so an
+        excluded warehouse's levels are never consulted for another one.
+        """
+        if _matches_location(location, self.locations_exclude):
+            return False
         if not self.locations_include:
             return True
-        return location in self.locations_include
+        return _matches_location(location, self.locations_include)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":
@@ -201,7 +219,9 @@ class Config:
         suppliers_raw = data.get("suppliers") or {}
         safety_raw = data.get("safety") or {}
         api_raw = data.get("api") or {}
-        locations_raw = (data.get("locations") or {}).get("include") or []
+        locations_cfg = data.get("locations") or {}
+        locations_raw = locations_cfg.get("include") or []
+        locations_excluded = locations_cfg.get("exclude") or []
         moq_raw = data.get("moq") or {}
 
         suppliers = SupplierConfig(
@@ -232,10 +252,23 @@ class Config:
         return cls(
             suppliers=suppliers,
             locations_include=tuple(str(loc) for loc in locations_raw),
+            locations_exclude=tuple(str(loc) for loc in locations_excluded),
             safety=safety,
             moq={str(k): float(v) for k, v in moq_raw.items()},
             api=api,
         )
+
+
+def _matches_location(location: str, names: tuple[str, ...]) -> bool:
+    """Case- and whitespace-insensitive match.
+
+    Warehouse names are typed by hand into config and copied out of Cin7's UI,
+    and "vic warehouse" failing to match "VIC Warehouse" would fail silently
+    in the worst possible way: the run would order for a warehouse somebody
+    had written down that they wanted left alone.
+    """
+    wanted = location.strip().lower()
+    return any(name.strip().lower() == wanted for name in names)
 
 
 def _optional_float(value: Any) -> Optional[float]:

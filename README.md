@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 203 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 210 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -102,6 +102,34 @@ same shortfall every run — roughly four duplicate orders over a two-week lead 
 twice-weekly schedule.
 
 This tool ignores `OnOrder` entirely and rebuilds the number from open POs.
+
+---
+
+## Leaving a warehouse out
+
+```yaml
+locations:
+  exclude:
+    - VIC Warehouse
+```
+
+Excluded locations get no order lines, and their per-location reorder points
+are never read — a location-level minimum only ever applies to its own
+location, so an excluded warehouse's levels cannot leak into another's
+calculation.
+
+Use `exclude` rather than `include` for "ignore that one warehouse". An
+allowlist silently drops a warehouse opened later and nothing in the report
+would say so; a denylist lets a new one in, where the worst case is a draft
+purchase order somebody reads and deletes.
+
+Not every shortfall is something to buy. A warehouse stocked by transfer from
+another will read as short of everything, and orders raised against it look
+entirely normal on the report — real SKUs, real quantities, real supplier.
+
+Names are matched ignoring case and surrounding spaces, and a filter naming no
+warehouse on the account is reported rather than ignored. That is the failure
+worth catching: configured, and doing nothing.
 
 ---
 
@@ -342,7 +370,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-203 tests, offline, well under a second. The ones that matter most:
+210 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while

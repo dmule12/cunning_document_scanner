@@ -39,6 +39,21 @@ locations:
   # Empty means every location. Otherwise a list of location names to include.
   include: []
 
+  # Locations to leave alone entirely — no order lines, and their per-location
+  # reorder points are never read. Applied after `include` and winning over it.
+  #
+  # Prefer this over `include` for "ignore that one warehouse". An allowlist
+  # silently drops a warehouse opened later, and nothing in the report would
+  # say so; a denylist lets a new one in, where the worst case is a draft
+  # purchase order somebody reads and deletes.
+  #
+  # Names are matched ignoring case and surrounding spaces, and a name that
+  # matches no warehouse on the account is reported rather than ignored.
+  exclude:
+    # VIC is stocked by transfer rather than direct supply, so a shortfall
+    # there is a stock movement and not something to buy.
+    - VIC Warehouse
+
 # ---------------------------------------------------------------------------
 # Reorder points
 #
