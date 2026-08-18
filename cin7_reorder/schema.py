@@ -55,9 +55,13 @@ ENDPOINT_PRODUCT = "product"
 #: list and the by-ID read, which looks exactly like "this product has no
 #: bill of materials" — a silent, expensive misreading.
 #:
-#: ``IncludeBOM`` is confirmed against a live account. ``IncludeAll`` does
-#: NOT work, so each collection needs its own flag.
-PRODUCT_INCLUDE_FLAGS = {"IncludeBOM": "true"}
+#: All three confirmed against a live account by sweeping candidate flags.
+#: ``IncludeAll=true`` does NOT work — each collection needs its own.
+PRODUCT_INCLUDE_FLAGS = {
+    "IncludeBOM": "true",  # -> BillOfMaterialsProducts
+    "IncludeReorderLevels": "true",  # -> ReorderLevels
+    "IncludeSuppliers": "true",  # -> Suppliers
+}
 ENDPOINT_PRODUCT_AVAILABILITY = "productAvailability"
 ENDPOINT_BILL_OF_MATERIALS = "BillOfMaterials"
 ENDPOINT_SUPPLIER = "supplier"
@@ -168,12 +172,57 @@ def parse_product(payload: Mapping[str, Any]) -> Optional[Product]:
     if not product_id:
         return None
 
+    supplier_id, supplier_name = _parse_default_supplier(payload)
+
     return Product(
         id=product_id,
         sku=as_str(get_first(payload, "SKU", "Sku", "Code")) or product_id,
         name=as_str(get_first(payload, "Name", "ProductName", "Description")) or "",
-        supplier_id=as_str(get_first(payload, "DefaultSupplierID", "SupplierID")),
-        supplier_name=as_str(get_first(payload, "DefaultSupplier", "Supplier")),
+        supplier_id=supplier_id,
+        supplier_name=supplier_name,
+    )
+
+
+def _parse_default_supplier(
+    payload: Mapping[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """The supplier to order this product from.
+
+    A product record carries no ``DefaultSupplierID`` field — the supplier
+    lives in the ``Suppliers`` collection, which only appears when
+    ``IncludeSuppliers=true`` is sent. Without that flag every product looks
+    supplier-less and the whole run skips silently.
+
+    Where several suppliers exist, one flagged as default wins; otherwise the
+    first is used, which matches how Cin7's own reorder picks one.
+    """
+    # A flat field, in case some accounts or versions expose one.
+    flat_id = as_str(get_first(payload, "DefaultSupplierID", "SupplierID"))
+    if flat_id:
+        return flat_id, as_str(get_first(payload, "DefaultSupplier", "Supplier"))
+
+    suppliers = get_first(
+        payload, "Suppliers", "ProductSuppliers", "SupplierList", default=[]
+    )
+    if not isinstance(suppliers, list) or not suppliers:
+        return None, None
+
+    entries = [s for s in suppliers if isinstance(s, Mapping)]
+    if not entries:
+        return None, None
+
+    default = next(
+        (
+            s
+            for s in entries
+            if get_first(s, "IsDefault", "Default", "IsPreferred") is True
+        ),
+        entries[0],
+    )
+
+    return (
+        as_str(get_first(default, "SupplierID", "ID", "Id")),
+        as_str(get_first(default, "SupplierName", "Name", "Supplier")),
     )
 
 

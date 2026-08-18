@@ -370,7 +370,12 @@ def find_products_with_bom(
     notes: list[str] = []
 
     for page in range(1, max_pages + 1):
-        result = client.try_get(schema.ENDPOINT_PRODUCT, page=page, limit=500)
+        result = client.try_get(
+            schema.ENDPOINT_PRODUCT,
+            page=page,
+            limit=500,
+            **schema.PRODUCT_INCLUDE_FLAGS,
+        )
         if not result.ok:
             notes.append(f"page {page}: {result.detail}")
             break
