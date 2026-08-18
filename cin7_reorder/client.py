@@ -160,8 +160,14 @@ class Cin7Client:
             return ProbeResult(path=url, ok=False, detail=f"transport error: {exc}")
 
         if response.status_code >= 400:
+            # Keep the body: Cin7 puts actionable guidance in 400s, such as
+            # "use the AdvancedPurchase endpoint", and discarding it turns a
+            # fixable problem into an opaque failure.
             return ProbeResult(
-                path=url, ok=False, status=response.status_code, detail="HTTP error"
+                path=url,
+                ok=False,
+                status=response.status_code,
+                detail=f"HTTP {response.status_code}: {response.text[:500]}",
             )
 
         try:
