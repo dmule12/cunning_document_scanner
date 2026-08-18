@@ -359,7 +359,9 @@ def parse_bill_of_materials(
         )
 
     return BillOfMaterials(
-        parent_product_id=parent_id, components=tuple(components)
+        parent_product_id=parent_id,
+        components=tuple(components),
+        parent_sku=as_str(get_first(payload, "SKU", "ProductCode")) or parent_id,
     )
 
 

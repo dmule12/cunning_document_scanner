@@ -107,6 +107,35 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             lines.append(f"- {note}")
         lines.append("")
 
+    # -- inbound working ---------------------------------------------------
+    # The one number here with no equivalent in Cin7's UI. It is reconstructed
+    # precisely because Cin7 will not report it against the base SKU, which
+    # means nobody can check it against anything — so the working is shown.
+    if result.inbound_audit:
+        lines.append("## Inbound stock — the working")
+        lines.append("")
+        lines.append(
+            "| Purchase | Status | Location | Lines | Still coming | Base units | |"
+        )
+        lines.append("| --- | --- | --- | ---: | ---: | ---: | --- |")
+        for row in result.inbound_audit:
+            lines.append(
+                f"| {row.purchase_id[:8]} "
+                f"| {row.status} "
+                f"| {row.location} "
+                f"| {row.lines} "
+                f"| {row.lines_outstanding} "
+                f"| {row.base_units:g} "
+                f"| {row.verdict} |"
+            )
+        lines.append("")
+        lines.append(
+            "_Base units are what the order becomes after the bill of "
+            "materials is applied — boxes converted to sleeves. A row reading "
+            "0 with lines still coming means the pack link is missing._"
+        )
+        lines.append("")
+
     # -- order lines -------------------------------------------------------
     if result.lines:
         lines.append("## Proposed order lines")
@@ -221,6 +250,7 @@ def render_json(result: RunResult, *, dry_run: bool) -> str:
         "api_calls": result.api_calls,
         "warnings": result.warnings,
         "notes": result.notes,
+        "inbound_audit": [_encode(row) for row in result.inbound_audit],
         "suppliers_considered": result.suppliers_considered,
         "suppliers_skipped": result.suppliers_skipped,
         "drafts_created": result.drafts_created,

@@ -38,6 +38,26 @@ from .models import PurchaseOrder, PurchaseStatus
 from .schema import CLOSED_STATUSES
 
 
+@dataclass(frozen=True)
+class InboundAudit:
+    """What one open purchase order contributed, and why.
+
+    Inbound is the one number in this tool with no equivalent in Cin7's UI to
+    check against — it is reconstructed precisely because Cin7 will not tell
+    you. A figure nobody can verify is a figure nobody should trust, so every
+    purchase that was read is accounted for here whether it contributed
+    anything or not.
+    """
+
+    purchase_id: str
+    status: str
+    location: str
+    lines: int
+    lines_outstanding: int
+    base_units: float
+    verdict: str
+
+
 @dataclass
 class InboundStock:
     """Inbound base units per (base product id, location), with provenance."""
@@ -49,6 +69,7 @@ class InboundStock:
         default_factory=lambda: defaultdict(set)
     )
     unknown_status_orders: list[str] = field(default_factory=list)
+    audit: list[InboundAudit] = field(default_factory=list)
 
     def add(
         self, product_id: str, location: str, quantity: float, purchase_id: str
@@ -86,12 +107,29 @@ def reconstruct(
     inbound = InboundStock()
 
     for purchase in purchases:
+        status = purchase.status.value if purchase.status else "?"
+
+        def record(verdict: str, base_units: float = 0.0, outstanding: int = 0) -> None:
+            inbound.audit.append(
+                InboundAudit(
+                    purchase_id=purchase.id,
+                    status=status,
+                    location=purchase.location,
+                    lines=len(purchase.lines),
+                    lines_outstanding=outstanding,
+                    base_units=base_units,
+                    verdict=verdict,
+                )
+            )
+
         if purchase.id in excluded:
+            record("skipped — this run's own draft, about to be rewritten")
             continue
 
         if purchase.status in CLOSED_STATUSES:
             # Fully received stock is already in on-hand; voided stock is
             # never arriving.
+            record("skipped — closed, nothing more coming")
             continue
 
         if purchase.status is PurchaseStatus.DRAFT:
@@ -100,25 +138,45 @@ def reconstruct(
             # suppress a real reorder indefinitely. Drafts the automation
             # owns are excluded above and rewritten; anyone else's draft is
             # deliberately ignored here.
+            record("skipped — someone else's draft, not a commitment")
             continue
 
         if purchase.status is PurchaseStatus.UNKNOWN:
-            # Do not guess. An unrecognised status might mean stock is
-            # coming or might not, and either assumption can be wrong in an
-            # expensive direction.
+            # Counted, not skipped. The list endpoint already established
+            # this order is open; a status string this code does not
+            # recognise is a gap in the parser, not evidence that nothing is
+            # coming. Excluding it would understate inbound, and understated
+            # inbound means re-ordering goods already in transit — the exact
+            # failure this module exists to prevent. It is named in the
+            # report either way.
             inbound.unknown_status_orders.append(purchase.id)
-            continue
+
+        counted = 0.0
+        outstanding_lines = 0
 
         for line in purchase.lines:
             outstanding = line.outstanding_quantity
             if outstanding <= 0:
                 continue
 
+            outstanding_lines += 1
             base_product_id, base_quantity = bom.units_in_base(
                 line.product_id, outstanding
             )
+            counted += base_quantity
             inbound.add(
                 base_product_id, purchase.location, base_quantity, purchase.id
             )
+
+        if not purchase.lines:
+            verdict = "no order lines on the record"
+        elif not outstanding_lines:
+            verdict = "everything on it has already been received"
+        else:
+            verdict = "counted"
+        if purchase.status is PurchaseStatus.UNKNOWN:
+            verdict += " (status not recognised — counted anyway)"
+
+        record(verdict, base_units=counted, outstanding=outstanding_lines)
 
     return inbound

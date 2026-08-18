@@ -76,13 +76,54 @@ def test_draft_purchase_is_not_treated_as_inbound(bom):
     assert inbound.get(SLEEVE, LOCATION) == 0.0
 
 
-def test_unknown_status_is_reported_not_guessed(bom):
+def test_unknown_status_is_counted_and_reported(bom):
+    """An unrecognised status is a gap in the parser, not an empty ship.
+
+    This reverses an earlier decision. The original reasoning was "do not
+    guess" — but not counting an order *is* a guess, and it is the expensive
+    one: its contents then look like stock that still needs ordering, so the
+    run re-orders goods already in transit. That is the failure this whole
+    module exists to prevent.
+
+    The purchase reached this point only because the list endpoint said it
+    was open, so there is positive evidence for counting it and none against.
+    It is named in the report either way.
+    """
     inbound = reconstruct(
         [purchase(purchase_id="po-x", ordered=10, status=PurchaseStatus.UNKNOWN)],
         bom,
     )
-    assert inbound.get(SLEEVE, LOCATION) == 0.0
+    assert inbound.get(SLEEVE, LOCATION) == 240.0
     assert "po-x" in inbound.unknown_status_orders
+
+
+def test_every_purchase_read_appears_in_the_audit(bom):
+    """Inbound has nothing in Cin7 to check it against, so it shows its working.
+
+    A number nobody can verify is a number nobody should trust. Orders that
+    contributed nothing matter most here: "inbound is zero" and "we never
+    looked" are indistinguishable in the total, and one is a bug.
+    """
+    inbound = reconstruct(
+        [
+            purchase(purchase_id="po-live", ordered=10),
+            purchase(purchase_id="po-done", ordered=10, received=10),
+            purchase(purchase_id="po-draft", ordered=10, status=PurchaseStatus.DRAFT),
+        ],
+        bom,
+    )
+
+    by_id = {row.purchase_id: row for row in inbound.audit}
+    assert set(by_id) == {"po-live", "po-done", "po-draft"}
+
+    assert by_id["po-live"].base_units == 240.0
+    assert by_id["po-live"].verdict == "counted"
+
+    assert by_id["po-done"].base_units == 0.0
+    assert "already been received" in by_id["po-done"].verdict
+
+    assert by_id["po-draft"].base_units == 0.0
+    assert "draft" in by_id["po-draft"].verdict
 
 
 def test_base_sku_orders_count_without_conversion(bom):

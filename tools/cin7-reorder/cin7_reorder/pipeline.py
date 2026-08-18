@@ -133,7 +133,7 @@ class Pipeline:
             return
 
         products, reorder_params, boms = self._load_products()
-        bom = self._build_bom_index(boms, result)
+        bom = self._build_bom_index(boms, products, result)
         availability = self._load_availability(result)
         purchases = self._load_purchases(result, suppliers)
 
@@ -147,11 +147,16 @@ class Pipeline:
             purchases, bom, exclude_purchase_ids=set(our_drafts)
         )
 
+        result.inbound_audit = list(inbound.audit)
+
         for purchase_id in inbound.unknown_status_orders:
             result.warnings.append(
-                f"Purchase {purchase_id} has an unrecognised status and was "
-                "excluded from inbound stock. If it represents stock on its "
-                "way, this run may over-order."
+                f"Purchase {purchase_id} carries a status this tool does not "
+                "recognise. It was counted as inbound anyway — the list "
+                "endpoint says it is open, and leaving it out would make its "
+                "contents look like stock that still needs ordering. Check it "
+                "in the inbound table below and add the status to "
+                "`_STATUS_MAP` in schema.py."
             )
 
         locations = sorted(
@@ -253,7 +258,10 @@ class Pipeline:
         return products, params, boms
 
     def _build_bom_index(
-        self, boms: list[BillOfMaterials], result: RunResult
+        self,
+        boms: list[BillOfMaterials],
+        products: dict[str, Product],
+        result: RunResult,
     ) -> BomIndex:
         index = BomIndex.build(boms)
 
@@ -272,10 +280,15 @@ class Pipeline:
             )
 
         for conflict in index.conflicts:
+            packs = ", ".join(conflict.pack_skus or conflict.pack_product_ids)
+            base = products.get(conflict.base_product_id)
+            base_sku = base.sku if base else conflict.base_product_id
             result.warnings.append(
-                f"Product {conflict.base_product_id} is a component of "
-                f"{len(conflict.pack_product_ids)} packs; it will be skipped "
-                "until the BOM data is corrected."
+                f"{base_sku} is a component of "
+                f"{len(conflict.pack_product_ids)} packs ({packs}); it will "
+                "be skipped until one of them is chosen. Nothing else can be "
+                "done here: ordering the wrong pack means the wrong quantity "
+                "of the wrong product arriving."
             )
 
         return index

@@ -70,6 +70,10 @@ class BillOfMaterials:
 
     parent_product_id: str
     components: tuple[BomComponent, ...] = ()
+    #: The parent's SKU. Carried through because it is what a human reads on
+    #: the purchase order and what MOQ overrides are keyed by; a GUID is
+    #: neither. Falls back to the id when the record does not carry one.
+    parent_sku: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -261,5 +265,9 @@ class RunResult:
     #: apart from ``warnings`` so that a run with nothing wrong with it does
     #: not report warnings, which is how warnings stop being read.
     notes: list[str] = field(default_factory=list)
+    #: One row per open purchase order read, and what it contributed to
+    #: inbound stock. Typed loosely to keep this module free of imports from
+    #: the arithmetic; see :class:`cin7_reorder.inbound.InboundAudit`.
+    inbound_audit: list = field(default_factory=list)
     api_calls: int = 0
     aborted: Optional[str] = None
