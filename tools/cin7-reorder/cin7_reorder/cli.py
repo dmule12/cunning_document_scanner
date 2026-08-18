@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -243,6 +244,12 @@ def plan(
         None, "--json", help="Write the JSON report to this file."
     ),
     state_path: Path = typer.Option(DEFAULT_STATE, "--state"),
+    supplier: Optional[list[str]] = typer.Option(
+        None,
+        "--supplier",
+        help="Limit to these suppliers (ID or part of the name). Repeatable. "
+        "Overrides the config pin and the opt-in attribute.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Compute the reorder and print the report. Writes nothing to Cin7."""
@@ -254,6 +261,7 @@ def plan(
         verbose=verbose,
         dry_run=True,
         allow_no_pin=True,
+        supplier=supplier,
     )
 
 
@@ -269,6 +277,11 @@ def apply(
         None, "--json", help="Write the JSON report to this file."
     ),
     state_path: Path = typer.Option(DEFAULT_STATE, "--state"),
+    supplier: Optional[list[str]] = typer.Option(
+        None,
+        "--supplier",
+        help="Limit to these suppliers (ID or part of the name). Repeatable.",
+    ),
     no_pin: bool = typer.Option(
         False,
         "--no-pin",
@@ -288,6 +301,7 @@ def apply(
         verbose=verbose,
         dry_run=False,
         allow_no_pin=no_pin,
+        supplier=supplier,
     )
 
 
@@ -300,9 +314,18 @@ def _run(
     verbose: bool,
     dry_run: bool,
     allow_no_pin: bool,
+    supplier: Optional[list[str]] = None,
 ) -> None:
     _setup_logging(verbose)
     credentials, config = _load(config_path)
+
+    if supplier:
+        # An explicit --supplier is a deliberate, visible narrowing, so it
+        # replaces the config pin rather than adding to it.
+        config = replace(
+            config, suppliers=replace(config.suppliers, pin=tuple(supplier))
+        )
+        typer.echo(f"Limited to supplier(s): {', '.join(supplier)}\n")
 
     if not dry_run and not config.suppliers.pin and not allow_no_pin:
         typer.secho(

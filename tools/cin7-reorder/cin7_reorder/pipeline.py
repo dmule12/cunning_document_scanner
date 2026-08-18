@@ -55,6 +55,26 @@ from .reorderpoints import resolve as resolve_reorder_point
 log = logging.getLogger(__name__)
 
 
+def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> bool:
+    """Whether a supplier is named by the rollout pin.
+
+    Accepts an exact ID or a case-insensitive fragment of the supplier's
+    name. Substring matching is deliberate here and nowhere else: the pin
+    exists to make "just this one supplier" easy to express, and a GUID is
+    not something anyone types correctly from memory.
+    """
+    lowered_name = name.strip().lower()
+    for entry in pin:
+        candidate = entry.strip()
+        if not candidate:
+            continue
+        if candidate == supplier_id:
+            return True
+        if candidate.lower() in lowered_name:
+            return True
+    return False
+
+
 @dataclass
 class Pipeline:
     client: Cin7Client
@@ -144,7 +164,11 @@ class Pipeline:
             if pin:
                 # The rollout pin overrides the attribute entirely, so the
                 # first live runs cannot touch anyone unexpected.
-                if supplier_id in pin:
+                #
+                # Matched on ID or on a case-insensitive name fragment,
+                # because supplier IDs are GUIDs nobody can type from memory
+                # and the whole point of the pin is being easy to set safely.
+                if _matches_pin(supplier_id, name, pin):
                     opted_in[supplier_id] = name
                     result.suppliers_considered.append(name)
                 else:

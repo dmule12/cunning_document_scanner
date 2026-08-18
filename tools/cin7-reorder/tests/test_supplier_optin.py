@@ -64,6 +64,37 @@ def test_a_supplier_with_an_empty_slot_is_not_opted_in():
     assert config.is_opted_in(value) is False
 
 
+def test_pin_matches_an_exact_id():
+    from cin7_reorder.pipeline import _matches_pin
+
+    assert _matches_pin("guid-123", "Acme Ltd", {"guid-123"}) is True
+
+
+def test_pin_matches_a_name_fragment_case_insensitively():
+    """Supplier IDs are GUIDs nobody types from memory.
+
+    The pin exists to make "just this one supplier" easy to express safely,
+    so a name fragment has to work.
+    """
+    from cin7_reorder.pipeline import _matches_pin
+
+    assert _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"abl"}) is True
+    assert _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"Distribution"}) is True
+
+
+def test_pin_does_not_match_an_unrelated_supplier():
+    from cin7_reorder.pipeline import _matches_pin
+
+    assert _matches_pin("guid-123", "Acai Supply", {"abl"}) is False
+
+
+def test_blank_pin_entries_match_nothing():
+    """A stray empty string must not silently select every supplier."""
+    from cin7_reorder.pipeline import _matches_pin
+
+    assert _matches_pin("guid-123", "Acme Ltd", {"", "   "}) is False
+
+
 def test_a_supplier_with_yes_in_the_slot_is_opted_in():
     supplier = {"ID": "s1", "Name": "Acme", "AdditionalAttribute1": "Yes"}
     config = SupplierConfig(attribute_field="AdditionalAttribute1")

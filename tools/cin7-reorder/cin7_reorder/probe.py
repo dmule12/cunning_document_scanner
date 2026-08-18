@@ -468,7 +468,12 @@ def _probe_reorder_parameters(client: Cin7Client, sample_size: int) -> ProbeFind
     question = "Are MinimumBeforeReorder / ReorderQuantity exposed on products?"
 
     try:
-        payload = client.get(schema.ENDPOINT_PRODUCT, page=1, limit=sample_size)
+        payload = client.get(
+            schema.ENDPOINT_PRODUCT,
+            page=1,
+            limit=sample_size,
+            **schema.PRODUCT_INCLUDE_FLAGS,
+        )
     except Cin7Error as exc:
         return ProbeFinding(
             question=question, answer="ENDPOINT FAILED", ok=False, detail=str(exc)
