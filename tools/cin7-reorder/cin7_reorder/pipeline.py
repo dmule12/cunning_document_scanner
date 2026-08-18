@@ -311,14 +311,56 @@ class Pipeline:
             )
 
         found: dict[tuple[str, str], Availability] = {}
+        seen: set[str] = set()
+
         for record in self.client.paginate(endpoint):
             parsed = schema.parse_availability(record)
             if parsed is None:
                 continue
+            if parsed.location:
+                seen.add(parsed.location)
             if not self.config.includes_location(parsed.location):
                 continue
             found[(parsed.product_id, parsed.location)] = parsed
+
+        self._report_location_filters(result, seen)
         return found
+
+    def _report_location_filters(
+        self, result: RunResult, seen: set[str]
+    ) -> None:
+        """Say which warehouses were left out, and flag a filter that missed.
+
+        A location filter that matches nothing is the dangerous case: the run
+        looks configured and behaves as though it were not. Somebody wrote a
+        warehouse name down meaning to exclude it, and a typo — or a rename in
+        Cin7 — turns that into orders being raised for it anyway.
+        """
+        left_out = sorted(
+            name for name in seen if not self.config.includes_location(name)
+        )
+        if left_out:
+            result.notes.append(
+                "Not ordering for " + ", ".join(left_out) + " (config)."
+            )
+
+        configured = (
+            self.config.locations_exclude + self.config.locations_include
+        )
+        unmatched = [
+            name
+            for name in configured
+            if not any(name.strip().lower() == s.strip().lower() for s in seen)
+        ]
+        if unmatched:
+            result.warnings.append(
+                "Location filter names no warehouse on this account: "
+                + ", ".join(repr(n) for n in unmatched)
+                + ". Cin7 reports "
+                + (", ".join(sorted(seen)) or "no locations at all")
+                + ". A filter that matches nothing has no effect, so this run "
+                "may be ordering for a warehouse you meant to leave out."
+            )
 
     def _load_purchases(
         self, result: RunResult, suppliers: dict[str, str]
