@@ -722,15 +722,31 @@ class Pipeline:
         for (supplier_id, location), lines in sorted(grouped.items()):
             reference = run_reference(supplier_id, location)
 
-            existing = next(
-                (
-                    draft
-                    for draft in our_drafts.values()
-                    if draft.supplier_id == supplier_id
-                    and draft.location == location
-                ),
-                None,
-            )
+            matching = [
+                draft
+                for draft in our_drafts.values()
+                if draft.supplier_id == supplier_id and draft.location == location
+            ]
+
+            if len(matching) > 1:
+                # Only one standing draft per supplier and location is ever
+                # intended. More than one means an earlier run failed to
+                # recognise its own work and raised another — the duplicate
+                # ordering this tool exists to prevent, aimed at itself. It
+                # updates one and says which others to go and look at, rather
+                # than guessing which is the real one.
+                others = ", ".join(
+                    d.reference or d.id for d in matching[1:]
+                )
+                result.warnings.append(
+                    f"{len(matching)} standing drafts for {reference}. Only "
+                    f"the first is being updated; check and delete: {others}. "
+                    "More than one means a previous run did not recognise its "
+                    "own draft, which is worth understanding before this runs "
+                    "unattended."
+                )
+
+            existing = matching[0] if matching else None
 
             plan = decide(
                 existing=existing,

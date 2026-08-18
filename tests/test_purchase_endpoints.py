@@ -204,3 +204,53 @@ def test_availability_resolves_past_the_documented_path(tmp_path):
     assert result.aborted is None
     line = next(ln for ln in result.lines if ln.base_sku == "CUP")
     assert line.on_hand == 5
+
+
+def test_a_rate_limit_is_waited_out_not_reported_as_failure(tmp_path, monkeypatch):
+    """429 says wait, not "this purchase is unreadable".
+
+    try_get reads every purchase in a run — the most call-hungry stage — and
+    treated a rate limit as a permanent failure. On an apply that aborts the
+    whole run rather than pausing for a second, because an unreadable purchase
+    means inbound stock is understated by an unknown amount.
+
+    The token bucket cannot prevent it: Cin7's window is rolling and shared
+    across every process using the credentials, so two runs a minute apart
+    each start believing they have the full allowance.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr("cin7_reorder.client.time.sleep", slept.append)
+
+    calls = {"n": 0}
+    base = make_handler()
+
+    def rate_limited_once(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/purchase"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": "2"},
+                    text="You have reached 60 calls per 60 seconds API limit.",
+                )
+        return base(request)
+
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=200),
+        read_only=True,
+        transport=httpx.MockTransport(rate_limited_once),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        config=Config(suppliers=SupplierConfig(attribute_field="AdditionalAttribute1")),
+        state_path=tmp_path / "state.json",
+        dry_run=True,
+    ).run()
+
+    assert slept == [2.0], "Retry-After was not honoured"
+    assert result.aborted is None
+    assert not [
+        w for w in result.warnings if "INBOUND STOCK MAY BE UNDERSTATED" in w
+    ], "a rate limit was mistaken for an unreadable purchase"
