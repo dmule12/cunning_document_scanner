@@ -254,7 +254,22 @@ LIVE_SHAPES = [
     # Invoiced but nothing received: the money moved, the goods have not.
     ({"OrderStatus": "AUTHORISED", "Status": "INVOICED",
       "CombinedReceivingStatus": "NOT RECEIVED"}, False),
+    # Seen live on an order whose only status was INVOICED. It must read as
+    # open, not as an unrecognised value: unrecognised warns on every run.
+    ({"OrderStatus": "INVOICED", "CombinedReceivingStatus": "NOT RECEIVED"}, False),
 ]
+
+
+def test_invoiced_is_a_recognised_status():
+    """An invoice is paperwork, not a delivery.
+
+    Left unmapped this warned on every run, and the warning had no action
+    behind it — whether stock is still coming is settled per line, by
+    subtracting received from ordered, not by the status string.
+    """
+    entry = schema.parse_purchase_list_entry({"ID": "x", "OrderStatus": "INVOICED"})
+    assert entry.status is not schema.PurchaseStatus.UNKNOWN
+    assert not entry.is_closed
 
 
 @pytest.mark.parametrize("row,closed", LIVE_SHAPES)
