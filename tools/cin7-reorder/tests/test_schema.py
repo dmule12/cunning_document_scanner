@@ -467,14 +467,86 @@ def test_approach_is_always_sent():
 
         Required Attribute 'Approach' not specified
 
-    It is the Simple-versus-Advanced selector, and nothing in the docs marks
-    it as mandatory. Nothing at runtime would notice it going missing either,
-    hence the test.
+    The value is "STOCK", read off a purchase order Cin7 has accepted. The
+    first attempt sent "SIMPLE", reasoning from the documented concept rather
+    than from data, and was rejected. Nothing in the docs marks the field as
+    mandatory and nothing at runtime would notice it going missing.
     """
     payload = schema.build_purchase_payload(
         supplier_id="s1", location="WA", reference="AUTO-1", lines=[]
     )
-    assert payload["Approach"] == "SIMPLE"
+    assert payload["Approach"] == "STOCK"
+
+
+def test_the_marker_is_written_where_it_can_be_read_back():
+    """A draft this tool cannot recognise is a duplicate purchase order.
+
+    `Reference` was the original marker field, and a real Cin7 purchase record
+    does not carry it — there is `OrderNumber`, which is Cin7's own, and
+    `Note`. Every run would have failed to find its own standing draft and
+    raised another: duplicate orders twice a week, from the tool built to stop
+    exactly that.
+    """
+    reference = "AUTO-REORDER-2026W34-WA-ba7067f4"
+    payload = schema.build_purchase_payload(
+        supplier_id="s1", location="WA", reference=reference, lines=[]
+    )
+
+    for key in schema.PURCHASE_MARKER_KEYS:
+        assert payload[key] == reference, f"marker missing from {key}"
+    assert payload["Order"]["Memo"] == reference
+
+    # And it survives the round trip from any one of them alone.
+    for key in (*schema.PURCHASE_MARKER_KEYS, None):
+        record = {"ID": "po-1", "Order": {"Lines": []}}
+        if key is None:
+            record["Order"]["Memo"] = reference
+        else:
+            record[key] = reference
+        parsed = schema.parse_purchase(record)
+        assert parsed.reference == reference, f"not read back from {key or 'Memo'}"
+
+
+def test_ordernumber_is_never_mistaken_for_our_marker():
+    """Every purchase ever raised has one. Matching on it would claim the lot."""
+    parsed = schema.parse_purchase(
+        {"ID": "po-1", "OrderNumber": "PO-81146", "Order": {"Lines": []}}
+    )
+    assert parsed.reference is None
+
+
+def test_the_order_is_always_created_as_a_draft():
+    """The one string separating a suggestion from a commitment."""
+    payload = schema.build_purchase_payload(
+        supplier_id="s1", location="WA", reference="AUTO-1", lines=[]
+    )
+    assert payload["Order"]["Status"] == "DRAFT"
+
+
+def test_config_cannot_authorise_an_order():
+    """`extra_fields` is for account quirks, not for changing what this does."""
+    payload = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        lines=[],
+        extra={"Order": {"Status": "AUTHORISED", "Memo": "fine"}},
+    )
+    assert payload["Order"]["Status"] == "DRAFT"
+    assert payload["Order"]["Memo"] == "fine"
+
+
+def test_line_fields_cannot_override_the_decision():
+    """Product, SKU and quantity are the whole content of the decision."""
+    line = schema.build_purchase_line(
+        product_id="p1",
+        sku="CUP",
+        quantity=24,
+        extra={"TaxRule": "GST on Expenses", "Quantity": 9999, "SKU": "WRONG"},
+    )
+    assert line["Quantity"] == 24
+    assert line["SKU"] == "CUP"
+    assert line["TaxRule"] == "GST on Expenses"
 
 
 def test_extra_fields_are_merged_in():
