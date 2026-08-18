@@ -86,6 +86,15 @@ ENDPOINT_LOCATION = "ref/location"
 ENDPOINT_PURCHASE_LIST = "purchaseList"
 ENDPOINT_PURCHASE = "purchase"
 
+#: Order lines live on their own sub-resource, not in the POST /purchase body.
+#:
+#: Confirmed the expensive way: POST /purchase with an ``Order`` block answers
+#: 200 and creates a purchase order with no lines on it. No error, no warning —
+#: the same "valid request, orders nothing" failure the payload builder guards
+#: against in config. Cin7 models a purchase as a header plus the tabs you see
+#: in its UI (Order, Stock received, Invoice), and each is written separately.
+ENDPOINT_PURCHASE_ORDER = "purchase/order"
+
 #: Cin7 has more than one kind of purchase order. ``/purchase`` answers a
 #: 400 for Advanced and Service purchases, telling you to use this instead.
 #: Both are needed: neither endpoint serves every purchase.
@@ -878,11 +887,15 @@ def build_purchase_payload(
     supplier_id: str,
     location: str,
     reference: str,
-    lines: Sequence[Mapping[str, Any]],
     order_date: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Assemble a ``POST /purchase`` body.
+    """Assemble a ``POST /purchase`` body — the header only.
+
+    Takes no lines, deliberately. Cin7 accepts them here, answers 200, and
+    creates a purchase order with nothing on it; a parameter that looks like
+    it works is how that happened once already.
+    See :func:`build_order_payload`.
 
     Cin7 validates this one attribute at a time — each rejection names a
     single missing field and says nothing about the next — so the required
@@ -898,13 +911,6 @@ def build_purchase_payload(
         "SupplierID": supplier_id,
         "Location": location,
         "Approach": PURCHASE_APPROACH,
-        "Order": {
-            # Explicit, never inferred from a Cin7 default. This one string is
-            # the difference between a suggestion and a commitment.
-            "Status": DRAFT_ORDER_STATUS,
-            "Memo": reference,
-            "Lines": [dict(line) for line in lines],
-        },
     }
     # The marker, everywhere it might survive. Whichever field this account
     # keeps is the one that lets the next run find this draft again.
@@ -914,21 +920,37 @@ def build_purchase_payload(
         payload["OrderDate"] = order_date
     if extra:
         for key, value in extra.items():
-            if key == "Order" and isinstance(value, Mapping):
-                # Merge rather than replace, or a configured Order block would
-                # silently discard every line we just computed. Status is held
-                # back too: config must not be able to authorise an order.
-                order = dict(payload["Order"])
-                order.update(
-                    {
-                        k: v
-                        for k, v in value.items()
-                        if k not in ("Lines", "Status")
-                    }
-                )
-                payload["Order"] = order
+            # An `Order` block here is silently ignored by Cin7 anyway, and
+            # accepting one would suggest it did something. Lines go to
+            # ENDPOINT_PURCHASE_ORDER.
+            if key == "Order":
                 continue
             payload[key] = value
+    return payload
+
+
+def build_order_payload(
+    *,
+    purchase_id: str,
+    reference: str,
+    lines: Sequence[Mapping[str, Any]],
+    extra: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Assemble a ``POST``/``PUT /purchase/order`` body — the lines themselves.
+
+    ``Status`` is set here and is never taken from config: it is the whole
+    difference between a suggestion and a commitment, and nothing outside this
+    function may set it to anything but DRAFT.
+    """
+    payload: dict[str, Any] = dict(extra or {})
+    payload.update(
+        {
+            "TaskID": purchase_id,
+            "Memo": reference,
+            "Status": DRAFT_ORDER_STATUS,
+            "Lines": [dict(line) for line in lines],
+        }
+    )
     return payload
 
 

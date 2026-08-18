@@ -473,7 +473,7 @@ def test_approach_is_always_sent():
     mandatory and nothing at runtime would notice it going missing.
     """
     payload = schema.build_purchase_payload(
-        supplier_id="s1", location="WA", reference="AUTO-1", lines=[]
+        supplier_id="s1", location="WA", reference="AUTO-1"
     )
     assert payload["Approach"] == "STOCK"
 
@@ -489,12 +489,16 @@ def test_the_marker_is_written_where_it_can_be_read_back():
     """
     reference = "AUTO-REORDER-2026W34-WA-ba7067f4"
     payload = schema.build_purchase_payload(
-        supplier_id="s1", location="WA", reference=reference, lines=[]
+        supplier_id="s1", location="WA", reference=reference
     )
 
     for key in schema.PURCHASE_MARKER_KEYS:
         assert payload[key] == reference, f"marker missing from {key}"
-    assert payload["Order"]["Memo"] == reference
+
+    order = schema.build_order_payload(
+        purchase_id="po-1", reference=reference, lines=[]
+    )
+    assert order["Memo"] == reference
 
     # And it survives the round trip from any one of them alone.
     for key in (*schema.PURCHASE_MARKER_KEYS, None):
@@ -517,23 +521,44 @@ def test_ordernumber_is_never_mistaken_for_our_marker():
 
 def test_the_order_is_always_created_as_a_draft():
     """The one string separating a suggestion from a commitment."""
-    payload = schema.build_purchase_payload(
-        supplier_id="s1", location="WA", reference="AUTO-1", lines=[]
+    order = schema.build_order_payload(
+        purchase_id="po-1", reference="AUTO-1", lines=[]
     )
-    assert payload["Order"]["Status"] == "DRAFT"
+    assert order["Status"] == "DRAFT"
 
 
 def test_config_cannot_authorise_an_order():
-    """`extra_fields` is for account quirks, not for changing what this does."""
+    """`order_fields` is for account quirks, not for changing what this does."""
+    order = schema.build_order_payload(
+        purchase_id="po-1",
+        reference="AUTO-1",
+        lines=[{"ProductID": "p1"}],
+        extra={"Status": "AUTHORISED", "Lines": [], "Memo": "overridden"},
+    )
+    assert order["Status"] == "DRAFT"
+    assert order["Lines"] == [{"ProductID": "p1"}]
+    assert order["Memo"] == "AUTO-1"
+
+
+def test_the_header_carries_no_lines():
+    """Cin7 accepts lines here, answers 200, and creates an empty order.
+
+    That happened: a draft purchase order for BioPak with four lines computed,
+    none of them on it. The parameter is gone rather than ignored, so the
+    mistake cannot be made silently a second time.
+    """
+    import inspect
+
+    params = inspect.signature(schema.build_purchase_payload).parameters
+    assert "lines" not in params
+
     payload = schema.build_purchase_payload(
         supplier_id="s1",
         location="WA",
         reference="AUTO-1",
-        lines=[],
-        extra={"Order": {"Status": "AUTHORISED", "Memo": "fine"}},
+        extra={"Order": {"Lines": [{"ProductID": "p1"}]}},
     )
-    assert payload["Order"]["Status"] == "DRAFT"
-    assert payload["Order"]["Memo"] == "fine"
+    assert "Order" not in payload
 
 
 def test_line_fields_cannot_override_the_decision():
@@ -555,7 +580,6 @@ def test_extra_fields_are_merged_in():
         supplier_id="s1",
         location="WA",
         reference="AUTO-1",
-        lines=[],
         extra={"TaxRule": "GST on Purchases", "Currency": "AUD"},
     )
     assert payload["TaxRule"] == "GST on Purchases"
@@ -563,19 +587,111 @@ def test_extra_fields_are_merged_in():
     assert payload["SupplierID"] == "s1"
 
 
-def test_configured_order_block_cannot_discard_the_lines():
-    """The one way `extra` could quietly do real damage.
+def test_the_marker_is_written_where_it_can_be_read_back():
+    """A draft this tool cannot recognise is a duplicate purchase order.
 
-    An `Order:` key in config replacing ours wholesale would send a purchase
-    order with no lines on it — a valid request, accepted by Cin7, ordering
-    nothing. Merged instead, and Lines from config are ignored outright.
+    `Reference` was the original marker field, and a real Cin7 purchase record
+    does not carry it — there is `OrderNumber`, which is Cin7's own, and
+    `Note`. Every run would have failed to find its own standing draft and
+    raised another: duplicate orders twice a week, from the tool built to stop
+    exactly that.
     """
+    reference = "AUTO-REORDER-2026W34-WA-ba7067f4"
+    payload = schema.build_purchase_payload(
+        supplier_id="s1", location="WA", reference=reference
+    )
+
+    for key in schema.PURCHASE_MARKER_KEYS:
+        assert payload[key] == reference, f"marker missing from {key}"
+
+    order = schema.build_order_payload(
+        purchase_id="po-1", reference=reference, lines=[]
+    )
+    assert order["Memo"] == reference
+
+    # And it survives the round trip from any one of them alone.
+    for key in (*schema.PURCHASE_MARKER_KEYS, None):
+        record = {"ID": "po-1", "Order": {"Lines": []}}
+        if key is None:
+            record["Order"]["Memo"] = reference
+        else:
+            record[key] = reference
+        parsed = schema.parse_purchase(record)
+        assert parsed.reference == reference, f"not read back from {key or 'Memo'}"
+
+
+def test_ordernumber_is_never_mistaken_for_our_marker():
+    """Every purchase ever raised has one. Matching on it would claim the lot."""
+    parsed = schema.parse_purchase(
+        {"ID": "po-1", "OrderNumber": "PO-81146", "Order": {"Lines": []}}
+    )
+    assert parsed.reference is None
+
+
+def test_the_order_is_always_created_as_a_draft():
+    """The one string separating a suggestion from a commitment."""
+    order = schema.build_order_payload(
+        purchase_id="po-1", reference="AUTO-1", lines=[]
+    )
+    assert order["Status"] == "DRAFT"
+
+
+def test_config_cannot_authorise_an_order():
+    """`order_fields` is for account quirks, not for changing what this does."""
+    order = schema.build_order_payload(
+        purchase_id="po-1",
+        reference="AUTO-1",
+        lines=[{"ProductID": "p1"}],
+        extra={"Status": "AUTHORISED", "Lines": [], "Memo": "overridden"},
+    )
+    assert order["Status"] == "DRAFT"
+    assert order["Lines"] == [{"ProductID": "p1"}]
+    assert order["Memo"] == "AUTO-1"
+
+
+def test_the_header_carries_no_lines():
+    """Cin7 accepts lines here, answers 200, and creates an empty order.
+
+    That happened: a draft purchase order for BioPak with four lines computed,
+    none of them on it. The parameter is gone rather than ignored, so the
+    mistake cannot be made silently a second time.
+    """
+    import inspect
+
+    params = inspect.signature(schema.build_purchase_payload).parameters
+    assert "lines" not in params
+
     payload = schema.build_purchase_payload(
         supplier_id="s1",
         location="WA",
         reference="AUTO-1",
-        lines=[{"ProductID": "p1", "Quantity": 5}],
-        extra={"Order": {"Memo": "raised automatically", "Lines": []}},
+        extra={"Order": {"Lines": [{"ProductID": "p1"}]}},
     )
-    assert payload["Order"]["Lines"] == [{"ProductID": "p1", "Quantity": 5}]
-    assert payload["Order"]["Memo"] == "raised automatically"
+    assert "Order" not in payload
+
+
+def test_line_fields_cannot_override_the_decision():
+    """Product, SKU and quantity are the whole content of the decision."""
+    line = schema.build_purchase_line(
+        product_id="p1",
+        sku="CUP",
+        quantity=24,
+        extra={"TaxRule": "GST on Expenses", "Quantity": 9999, "SKU": "WRONG"},
+    )
+    assert line["Quantity"] == 24
+    assert line["SKU"] == "CUP"
+    assert line["TaxRule"] == "GST on Expenses"
+
+
+def test_extra_fields_are_merged_in():
+    """Whatever else this account demands, without a code change."""
+    payload = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        extra={"TaxRule": "GST on Purchases", "Currency": "AUD"},
+    )
+    assert payload["TaxRule"] == "GST on Purchases"
+    assert payload["Currency"] == "AUD"
+    assert payload["SupplierID"] == "s1"
+
