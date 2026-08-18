@@ -161,6 +161,8 @@ class PurchaseConfig:
     """
 
     extra_fields: dict[str, Any] = field(default_factory=dict)
+    #: The same, for every line inside the order. A tax rule, typically.
+    line_fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,7 @@ class Config:
         suppliers_raw = data.get("suppliers") or {}
         safety_raw = data.get("safety") or {}
         api_raw = data.get("api") or {}
+        purchase_raw = data.get("purchase") or {}
         locations_cfg = data.get("locations") or {}
         locations_raw = locations_cfg.get("include") or []
         locations_excluded = locations_cfg.get("exclude") or []
@@ -272,7 +275,8 @@ class Config:
             moq={str(k): float(v) for k, v in moq_raw.items()},
             api=api,
             purchase=PurchaseConfig(
-                extra_fields=dict((data.get("purchase") or {}).get("extra_fields") or {})
+                extra_fields=dict(purchase_raw.get("extra_fields") or {}),
+                line_fields=dict(purchase_raw.get("line_fields") or {}),
             ),
         )
 

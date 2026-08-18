@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -713,9 +714,11 @@ class Pipeline:
                         product_id=line.order_product_id,
                         sku=line.order_sku,
                         quantity=line.quantity,
+                        extra=self.config.purchase.line_fields,
                     )
                     for line in lines
                 ],
+                order_date=f"{date.today().isoformat()}T00:00:00",
                 extra=self.config.purchase.extra_fields,
             )
 

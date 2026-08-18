@@ -677,7 +677,12 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
         status=status,
         supplier_id=as_str(get_first(payload, "SupplierID", "Supplier")),
         location=as_str(get_first(payload, "Location", "LocationName")) or "",
-        reference=as_str(get_first(payload, "Reference", "PurchaseOrderNumber", "Ref")),
+        # Not OrderNumber: that is Cin7's own PO-81146, present on every
+        # purchase ever raised, and matching on it would claim the lot.
+        reference=(
+            as_str(get_first(payload, *PURCHASE_MARKER_KEYS))
+            or as_str(get_first(order_mapping, "Memo", "Reference"))
+        ),
         lines=tuple(lines),
         raw_status=raw_status,
     )
@@ -842,14 +847,30 @@ def parse_purchase_list_entry(payload: Mapping[str, Any]) -> PurchaseListEntry:
 # ---------------------------------------------------------------------------
 
 
-#: Cin7's Simple-versus-Advanced selector, required on every POST /purchase.
-#: Confirmed live: omitting it answers
-#: ``Required Attribute 'Approach' not specified``.
+#: Required on every POST /purchase. Confirmed live twice over: omitting it
+#: answers ``Required Attribute 'Approach' not specified``, and every purchase
+#: on the account carries ``"STOCK"``.
 #:
-#: SIMPLE is right for what this tool raises. An Advanced purchase splits
-#: ordering, receipting and invoicing into separate authorisable stages, which
-#: is machinery for a draft nobody has sent yet.
-PURCHASE_APPROACH = "SIMPLE"
+#: Read off a real order rather than guessed. "SIMPLE" was the guess, and it
+#: was wrong — the docs describe the concept, not the string.
+PURCHASE_APPROACH = "STOCK"
+
+#: Order status for what we create. Never anything else: this tool exists to
+#: put a draft in front of a person, and an authorised purchase order is one
+#: nobody agreed to.
+DRAFT_ORDER_STATUS = "DRAFT"
+
+#: Where the "we made this" marker is written, and read back from.
+#:
+#: ``Reference`` is what the marker was originally written to, and a real
+#: purchase record does not carry that field at all — Cin7 has ``OrderNumber``
+#: (its own PO-81146) and ``Note``. Had that gone unnoticed, every run would
+#: have failed to recognise its own standing draft and raised another one:
+#: duplicate purchase orders, twice a week, from the tool built to prevent
+#: exactly that.
+#:
+#: So it goes in several places and is read back from all of them.
+PURCHASE_MARKER_KEYS = ("Reference", "Note", "Ref")
 
 
 def build_purchase_payload(
@@ -858,6 +879,7 @@ def build_purchase_payload(
     location: str,
     reference: str,
     lines: Sequence[Mapping[str, Any]],
+    order_date: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``POST /purchase`` body.
@@ -875,19 +897,35 @@ def build_purchase_payload(
     payload: dict[str, Any] = {
         "SupplierID": supplier_id,
         "Location": location,
-        "Reference": reference,
         "Approach": PURCHASE_APPROACH,
         "Order": {
+            # Explicit, never inferred from a Cin7 default. This one string is
+            # the difference between a suggestion and a commitment.
+            "Status": DRAFT_ORDER_STATUS,
+            "Memo": reference,
             "Lines": [dict(line) for line in lines],
         },
     }
+    # The marker, everywhere it might survive. Whichever field this account
+    # keeps is the one that lets the next run find this draft again.
+    for key in PURCHASE_MARKER_KEYS:
+        payload[key] = reference
+    if order_date:
+        payload["OrderDate"] = order_date
     if extra:
         for key, value in extra.items():
             if key == "Order" and isinstance(value, Mapping):
                 # Merge rather than replace, or a configured Order block would
-                # silently discard every line we just computed.
+                # silently discard every line we just computed. Status is held
+                # back too: config must not be able to authorise an order.
                 order = dict(payload["Order"])
-                order.update({k: v for k, v in value.items() if k != "Lines"})
+                order.update(
+                    {
+                        k: v
+                        for k, v in value.items()
+                        if k not in ("Lines", "Status")
+                    }
+                )
                 payload["Order"] = order
                 continue
             payload[key] = value
@@ -895,13 +933,28 @@ def build_purchase_payload(
 
 
 def build_purchase_line(
-    *, product_id: str, sku: str, quantity: float
+    *,
+    product_id: str,
+    sku: str,
+    quantity: float,
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    return {
-        "ProductID": product_id,
-        "SKU": sku,
-        "Quantity": quantity,
-    }
+    """One order line.
+
+    ``extra`` carries whatever this account requires on a line — a tax rule,
+    typically — from `purchase.line_fields` in config.yaml. Product, SKU and
+    quantity are ours and cannot be overridden: they are the entire content of
+    the decision, and a config file has no business changing them.
+    """
+    line = dict(extra or {})
+    line.update(
+        {
+            "ProductID": product_id,
+            "SKU": sku,
+            "Quantity": quantity,
+        }
+    )
+    return line
 
 
 def iter_records(payload: Any) -> Iterable[dict]:

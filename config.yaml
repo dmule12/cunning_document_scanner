@@ -124,10 +124,25 @@ purchase:
   # SupplierID, Location, Reference and Approach are always sent and do not
   # belong here. An `Order:` block is merged rather than substituted, and any
   # `Lines` in it are ignored — replacing them would send an order for nothing.
-  extra_fields: {}
-    # TaxRule: "GST on Purchases"
-    # Currency: "AUD"
-    # Terms: "Net 30"
+  # These values are read off purchase order PO-81146, which Cin7 accepted.
+  # Comment one out if it turns out not to be required — every field here is a
+  # value this tool asserts rather than lets Cin7 decide.
+  extra_fields:
+    TaxRule: "GST on Expenses"
+    TaxCalculation: "Exclusive"
+    Terms: "30 Days EOM"
+    InventoryAccount: "11500"
+    BlindReceipt: false
+
+  # The same, for every line inside the order. ProductID, SKU and Quantity are
+  # always ours and cannot be overridden here — they are the entire content of
+  # the decision.
+  #
+  # Price is deliberately absent. This tool has no view on what a thing should
+  # cost, and a wrong price on a draft is worse than a blank one: blank is
+  # obviously unfinished, wrong is quietly signed off.
+  line_fields:
+    TaxRule: "GST on Expenses"
 
 api:
   page_size: 500
