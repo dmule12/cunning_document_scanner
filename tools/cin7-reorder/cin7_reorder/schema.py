@@ -62,20 +62,20 @@ PRODUCT_INCLUDE_FLAGS = {
     "IncludeReorderLevels": "true",  # -> ReorderLevels
     "IncludeSuppliers": "true",  # -> Suppliers
 }
-#: UNRESOLVED. ``productAvailability`` returns Cin7's not-found redirect on
-#: this account, exactly as the phantom /BillOfMaterials endpoint did. The
-#: candidates below are tried in order by ``find_availability_endpoint``, and
-#: the winner is cached for the rest of the run.
-ENDPOINT_PRODUCT_AVAILABILITY = "productAvailability"
+#: Confirmed against a live account. Note the ``ref/`` prefix — the bare
+#: ``productAvailability`` path that Cin7's own documentation implies returns
+#: a not-found redirect. The alternatives are kept as fallbacks in case other
+#: accounts or API versions differ.
+ENDPOINT_PRODUCT_AVAILABILITY = "ref/productAvailability"
 
 AVAILABILITY_ENDPOINT_CANDIDATES = (
+    "ref/productAvailability",
     "productAvailability",
     "ProductAvailability",
     "productavailability",
     "availability",
     "stockAvailability",
     "productAvailabilityList",
-    "ref/productAvailability",
     "stockOnHand",
     "stockLevels",
 )
@@ -84,6 +84,20 @@ ENDPOINT_SUPPLIER = "supplier"
 ENDPOINT_LOCATION = "ref/location"
 ENDPOINT_PURCHASE_LIST = "purchaseList"
 ENDPOINT_PURCHASE = "purchase"
+
+#: Cin7 has more than one kind of purchase order. ``/purchase`` answers a
+#: 400 for Advanced and Service purchases, telling you to use this instead.
+#: Both are needed: neither endpoint serves every purchase.
+ENDPOINT_ADVANCED_PURCHASE = "AdvancedPurchase"
+ADVANCED_PURCHASE_CANDIDATES = (
+    "AdvancedPurchase",
+    "advancedPurchase",
+    "advancedpurchase",
+)
+
+#: Marker in the 400 body that means "wrong endpoint for this purchase type",
+#: as opposed to a genuinely bad request.
+DEPRECATED_ENDPOINT_MARKER = "AdvancedPurchase endpoint"
 
 #: Envelope keys under which Cin7 nests the actual list in a paged response.
 #: Cin7 varies this per endpoint (``Products``, ``PurchaseList``, ...), so we
