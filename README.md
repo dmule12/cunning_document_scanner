@@ -306,6 +306,24 @@ in Cin7's UI to check against.
 
 Compare its suggestions against what you would have ordered by hand.
 
+### On a schedule
+
+`.github/workflows/reorder.yml` runs **`apply`** every Tuesday and Friday at
+08:00 Perth, creating draft purchase orders and posting the report to the run
+summary page. `plan` and `probe` are available from the dispatch menu for a dry
+run.
+
+It needs `CIN7_ACCOUNT_ID` and `CIN7_APP_KEY` as repository secrets, and only
+fires from the default branch — a cron on any other branch is inert with
+nothing to say so.
+
+**The job goes red when something needs a person**, because nobody reads a
+green scheduled run and GitHub only emails on failure. Two conditions qualify:
+the run aborted, or a draft write failed and left an empty purchase order in
+Cin7 for somebody to delete. Ordinary warnings do not fail it — a job that goes
+red twice a week for something nobody must act on is a job people stop looking
+at.
+
 ### 3. `apply` — create and update drafts
 
 ```bash

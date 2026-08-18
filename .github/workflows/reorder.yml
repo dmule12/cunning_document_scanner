@@ -1,24 +1,23 @@
 name: Cin7 reorder
 
-# Twice-weekly reorder run.
+# Twice-weekly reorder run. Creates DRAFT purchase orders in Cin7.
 #
-# DELIBERATELY `plan` ONLY. It computes the reorder and uploads a report; it
-# does not create or update anything in Cin7. Switching to `apply` is a
-# conscious one-line change, and should not happen until:
+# It never authorises one and never emails a supplier — Cin7 has no API for
+# sending a purchase order anyway. A person opens the draft, checks it, and
+# clicks Email. That step is the control, and it is a human one.
 #
-#   1. `probe` passes against the live account, and
-#   2. `plan` has run for at least one full supplier lead time and its numbers
-#      have been checked against what you would have ordered by hand.
-#
-# See README.md, "Known unknowns".
+# Run `plan` from the dispatch menu for a dry run; it writes nothing, and the
+# HTTP client physically refuses non-GET requests in that mode.
 
 on:
   schedule:
-    # Tuesday and Friday, 06:00 UTC.
+    # Tuesday and Friday, 08:00 Perth (AWST, UTC+8) = 00:00 UTC.
+    # Western Australia does not observe daylight saving, so this holds
+    # year-round.
     #
     # A schedule only ever fires from the repository's default branch. On any
     # other branch it is inert, with nothing to say so.
-    - cron: "0 6 * * 2,5"
+    - cron: "0 0 * * 2,5"
   workflow_dispatch:
     inputs:
       command:
@@ -26,7 +25,7 @@ on:
         required: true
         default: plan
         type: choice
-        options: [probe, plan]
+        options: [probe, plan, apply]
 
 permissions:
   contents: read
@@ -76,8 +75,16 @@ jobs:
           key: cin7-reorder-state-${{ github.run_id }}
           restore-keys: cin7-reorder-state-
 
+      - name: Which command
+        # A scheduled run supplies no inputs, so `apply` is what the schedule
+        # means. Resolved once, here, rather than repeating the fallback in
+        # every step's condition where one copy could drift from the others
+        # and quietly run the wrong thing.
+        id: cmd
+        run: echo "value=${{ inputs.command || 'apply' }}" >> "$GITHUB_OUTPUT"
+
       - name: Probe
-        if: inputs.command == 'probe'
+        if: steps.cmd.outputs.value == 'probe'
         env:
           CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
           CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
@@ -86,7 +93,7 @@ jobs:
           python -m cin7_reorder probe | tee report.md
 
       - name: Plan
-        if: inputs.command != 'probe'
+        if: steps.cmd.outputs.value == 'plan'
         env:
           CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
           CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
@@ -94,6 +101,64 @@ jobs:
           python -m cin7_reorder plan \
             --output report.md \
             --json report.json
+
+      - name: Apply
+        id: apply
+        if: steps.cmd.outputs.value == 'apply'
+        env:
+          CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
+          CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
+        run: |
+          python -m cin7_reorder apply \
+            --output report.md \
+            --json report.json
+
+      - name: Anything needing a person
+        # Nobody watches a green scheduled run. GitHub emails on failure, so
+        # failing the job is the only reliable way to get attention — and once
+        # this creates purchase orders unattended, two conditions genuinely
+        # need it:
+        #
+        #   * the run aborted, so it may have written some drafts and not
+        #     others; and
+        #   * a draft write failed, which leaves a real, empty purchase order
+        #     in Cin7 for somebody to delete.
+        #
+        # Ordinary warnings do not fail the run. A job that goes red twice a
+        # week for something nobody needs to act on is a job people stop
+        # looking at, which costs more than it saves.
+        if: always() && steps.cmd.outputs.value != 'probe'
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          report = pathlib.Path("report.json")
+          if not report.exists():
+              print("No report.json — the run did not get far enough to write one.")
+              sys.exit(1)
+
+          data = json.loads(report.read_text())
+          problems = []
+
+          if data.get("aborted"):
+              problems.append(f"Run aborted: {data['aborted']}")
+
+          for warning in data.get("warnings", []):
+              if "Failed to write draft" in warning:
+                  problems.append(warning)
+              if "standing drafts" in warning:
+                  problems.append(warning)
+
+          created = data.get("drafts_created") or []
+          updated = data.get("drafts_updated") or []
+          print(f"{len(created)} draft(s) created, {len(updated)} updated.")
+
+          if problems:
+              print("\nNeeds a person:\n")
+              for problem in problems:
+                  print(f"  - {problem}")
+              sys.exit(1)
+          PY
 
       - name: Summarise
         # Puts the whole report on the run's summary page, so it can be read
@@ -113,14 +178,19 @@ jobs:
           if-no-files-found: ignore
 
       - name: Save draft fingerprints
-        # Only on success. A run that died partway through may have written
-        # some drafts and not others; persisting that would teach the next run
-        # a fingerprint for work it cannot vouch for.
-        if: success() && inputs.command != 'probe'
+        # Saved whenever `apply` ran, including when it failed or when the
+        # check above went red.
+        #
+        # The tool writes a fingerprint per draft as it goes, so the file
+        # already reflects exactly the drafts that succeeded — there is no
+        # half-written state to protect against. Skipping the save costs
+        # something real instead: without a fingerprint, `decide` cannot rule
+        # out a human edit and leaves that draft alone for good.
+        if: always() && steps.apply.outcome != 'skipped'
         run: mkdir -p state
 
       - uses: actions/cache/save@v4
-        if: success() && inputs.command != 'probe'
+        if: always() && steps.apply.outcome != 'skipped'
         with:
           path: state
           key: cin7-reorder-state-${{ github.run_id }}
