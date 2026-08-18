@@ -197,6 +197,11 @@ class SkipReason(str, Enum):
     NO_SUPPLIER = "no_supplier"
     SUPPLIER_NOT_OPTED_IN = "supplier_not_opted_in"
     SUFFICIENT_STOCK = "sufficient_stock"
+    #: Below its minimum on the shelf, but covered by stock already on its
+    #: way. These are the duplicate orders the tool exists to prevent — Cin7's
+    #: own low-stock reorder would have raised every one of them, because the
+    #: pack SKU's inbound quantity is invisible against the base SKU.
+    COVERED_BY_INBOUND = "covered_by_inbound"
 
 
 @dataclass(frozen=True)

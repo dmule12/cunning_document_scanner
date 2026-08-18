@@ -79,9 +79,33 @@ def test_position_meaningfully_above_the_minimum_does_not_trigger(
 
 
 def test_inbound_stock_counts_towards_the_position(bom, config, sleeve_product):
-    """The whole reason inbound is reconstructed: don't reorder twice."""
+    """The whole reason inbound is reconstructed: don't reorder twice.
+
+    Reported under its own reason, not lumped in with genuine sufficiency.
+    60 on the shelf against a minimum of 100 is short — Cin7's own low-stock
+    reorder would raise this, because the boxes on their way sit against the
+    pack SKU and never show against the sleeve. Counting these separately is
+    the only visible evidence the reconstruction is doing anything at all.
+    """
     line, skip = evaluate(
         demand(sleeve_product, reorder_point=100, on_hand=60, inbound_base=48),
+        bom,
+        config,
+    )
+    assert line is None
+    assert skip.reason is SkipReason.COVERED_BY_INBOUND
+    assert "already on its way" in skip.detail
+
+
+def test_plenty_on_the_shelf_is_not_credited_to_inbound(bom, config, sleeve_product):
+    """Don't claim credit for a duplicate order that was never going to happen.
+
+    Stock above the minimum without counting anything inbound would not have
+    triggered either way, so it is ordinary sufficiency — inflating the
+    prevented-duplicates count with these would make the number meaningless.
+    """
+    line, skip = evaluate(
+        demand(sleeve_product, reorder_point=100, on_hand=200, inbound_base=48),
         bom,
         config,
     )

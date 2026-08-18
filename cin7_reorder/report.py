@@ -36,6 +36,7 @@ _SKIP_LABEL = {
     SkipReason.NO_SUPPLIER: "No supplier on the product",
     SkipReason.SUPPLIER_NOT_OPTED_IN: "Supplier not opted in",
     SkipReason.SUFFICIENT_STOCK: "Sufficient stock",
+    SkipReason.COVERED_BY_INBOUND: "Covered by stock already on its way",
 }
 
 
@@ -211,9 +212,37 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             lines.append(f"- {entry}")
         lines.append("")
 
+    # -- duplicate orders prevented ----------------------------------------
+    # The tool's entire reason for existing, and otherwise invisible: these
+    # products are below their minimum on the shelf. Cin7's own low-stock
+    # reorder would raise every one of them, because the boxes on their way
+    # sit against the pack SKU and never show against the base SKU.
+    covered = [
+        s for s in result.skipped if s.reason is SkipReason.COVERED_BY_INBOUND
+    ]
+    if covered:
+        lines.append("## Duplicate orders prevented")
+        lines.append("")
+        lines.append(
+            f"**{len(covered)}** product/location pair(s) are below their "
+            "minimum on the shelf but covered by stock already on its way. "
+            "Cin7's own low-stock reorder would have re-ordered all of them."
+        )
+        lines.append("")
+        lines.append("| SKU | Location | Working |")
+        lines.append("| --- | --- | --- |")
+        for skip in sorted(covered, key=lambda s: (s.location, s.base_sku)):
+            lines.append(
+                f"| {skip.base_sku} | {skip.location or '—'} | {skip.detail} |"
+            )
+        lines.append("")
+
     # -- skips that matter -------------------------------------------------
     actionable = [
-        s for s in result.skipped if s.reason is not SkipReason.SUFFICIENT_STOCK
+        s
+        for s in result.skipped
+        if s.reason
+        not in (SkipReason.SUFFICIENT_STOCK, SkipReason.COVERED_BY_INBOUND)
     ]
     if actionable:
         lines.append("## Skipped — needs attention")
@@ -229,9 +258,12 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             )
         lines.append("")
 
-    sufficient = len(result.skipped) - len(actionable)
+    sufficient = len(result.skipped) - len(actionable) - len(covered)
     if sufficient:
-        lines.append(f"_{sufficient} product/location pair(s) had sufficient stock._")
+        lines.append(
+            f"_{sufficient} product/location pair(s) had sufficient stock on "
+            "the shelf, without counting anything inbound._"
+        )
         lines.append("")
 
     if result.suppliers_skipped:
