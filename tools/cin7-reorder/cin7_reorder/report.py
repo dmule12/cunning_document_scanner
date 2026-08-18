@@ -96,6 +96,17 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             lines.append(f"- {warning}")
         lines.append("")
 
+    # -- coverage ----------------------------------------------------------
+    # What the run looked at, and what it left out on purpose. Not warnings:
+    # nothing here is wrong, but "inbound was computed from 12 open orders,
+    # and 300 others were out of scope" is the context the numbers need.
+    if result.notes:
+        lines.append("## Coverage")
+        lines.append("")
+        for note in result.notes:
+            lines.append(f"- {note}")
+        lines.append("")
+
     # -- order lines -------------------------------------------------------
     if result.lines:
         lines.append("## Proposed order lines")
@@ -209,6 +220,7 @@ def render_json(result: RunResult, *, dry_run: bool) -> str:
         "aborted": result.aborted,
         "api_calls": result.api_calls,
         "warnings": result.warnings,
+        "notes": result.notes,
         "suppliers_considered": result.suppliers_considered,
         "suppliers_skipped": result.suppliers_skipped,
         "drafts_created": result.drafts_created,

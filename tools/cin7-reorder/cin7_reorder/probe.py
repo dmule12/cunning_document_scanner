@@ -369,7 +369,7 @@ def _probe_purchase_receipts(client: Cin7Client, sample_size: int) -> ProbeFindi
     detail_keys: list[str] = []
 
     for row in rows[:sample_size]:
-        purchase_id, _status, _ref = schema.parse_purchase_list_entry(row)
+        purchase_id = schema.parse_purchase_list_entry(row).id
         if not purchase_id:
             continue
         try:

@@ -13,13 +13,15 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 169 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 176 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
 | `MinimumBeforeReorder` / `ReorderQuantity` on products | ✅ Confirmed live |
 | Supplier attributes | ✅ Found — ten numbered slots, see below |
 | Bills of materials, supplier links, reorder levels | ✅ Reachable — behind include-flags, see below |
+| Stock levels | ✅ At `ref/productAvailability`, not the documented `productAvailability` |
+| Advanced and Service purchases | ✅ At `advanced-purchase` — hyphenated, resolved at runtime |
 | Whether a draft purchase can be updated | Untested — needs a manual write |
 
 `probe` is still the first command to run.
@@ -71,7 +73,8 @@ suppliers:
 2. Reads products and their stored reorder points (`MinimumBeforeReorder`, `ReorderQuantity`).
 3. Reads bills of materials and inverts them into a **sleeve → box** index.
 4. Reads stock levels, driving from the product list so stocked-out products stay visible.
-5. Reads every open purchase order and **reconstructs inbound stock** in base units.
+5. Reads the open purchase orders **belonging to those suppliers** and
+   **reconstructs inbound stock** in base units.
 6. Works out what to order, rounds up to whole packs, applies MOQs and safety caps.
 7. Creates or updates **draft** purchase orders.
 
@@ -97,6 +100,37 @@ same shortfall every run — roughly four duplicate orders over a two-week lead 
 twice-weekly schedule.
 
 This tool ignores `OnOrder` entirely and rebuilds the number from open POs.
+
+---
+
+## Where the API calls go
+
+Everything except purchase orders pages in bulk — 500 records a call — so the
+whole catalogue costs a handful of requests. Purchase orders are read one at a
+time, one call each and **two for an Advanced or Service purchase**, which
+answers a 400 naming the right endpoint before it answers anything useful.
+
+That one stage is the whole cost of a run, and on a busy account it will
+exhaust Cin7's 5000/day allowance and spend the rest of the run being 429'd.
+So the list is filtered before anything is fetched:
+
+- **closed orders** — nothing is on its way, so nothing to count
+- **other suppliers' orders** — a run ordering from one supplier does not need
+  to read everyone else's paperwork
+
+An order whose list row names no supplier at all is read anyway. Skipping it
+would be cheaper and occasionally wrong, and being wrong here means ordering
+goods that are already on the water.
+
+`api.max_purchase_details` (default 250) is the backstop if what survives the
+filters is still enormous. Reaching it understates inbound stock, so `plan`
+says so at the top of the report and `apply` refuses to write at all.
+
+Every run reports what it read and what it left out, under **Coverage**. The
+one case the supplier filter gets wrong is an open order from a *different*
+supplier that happens to carry a product being reordered here; nothing in the
+arithmetic can detect that, which is why the count is printed rather than
+assumed away.
 
 ---
 
@@ -243,7 +277,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-169 tests, offline, well under a second. The ones that matter most:
+176 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
@@ -251,6 +285,9 @@ number every run, and **voiding in Cin7 is permanent.**
 - `test_reorder.py` — a missing `productAvailability` row means zero stock, not "skip".
 - `test_bom.py` — a sleeve in two different boxes is a conflict to report, never a guess.
 - `test_drafts.py` — an edited draft is never overwritten.
+- `test_purchase_filtering.py` — 300 open orders from a supplier we don't order
+  from cost zero calls. This one counts requests, not results: a run that gets
+  the numbers right by reading the whole account is still broken.
 
 ---
 

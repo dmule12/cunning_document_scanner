@@ -109,7 +109,7 @@ class Pipeline:
         products, reorder_params, boms = self._load_products()
         bom = self._build_bom_index(boms, result)
         availability = self._load_availability(result)
-        purchases = self._load_purchases(result)
+        purchases = self._load_purchases(result, suppliers)
 
         our_drafts = {
             p.id: p
@@ -281,30 +281,131 @@ class Pipeline:
             found[(parsed.product_id, parsed.location)] = parsed
         return found
 
-    def _load_purchases(self, result: RunResult) -> list[PurchaseOrder]:
-        """Open purchases, in full.
+    def _load_purchases(
+        self, result: RunResult, suppliers: dict[str, str]
+    ) -> list[PurchaseOrder]:
+        """Open purchases from the suppliers in scope, in full.
 
-        The list endpoint is a cheap pre-filter: closed purchases never cost a
-        detail call. This is the one place the tool loops per record rather
-        than paging in bulk, and it is bounded by open-PO count, not SKU count.
+        This is the one place the tool fetches per record rather than paging
+        in bulk, and it is by far the most expensive stage. Every detail costs
+        a request — two for Advanced purchases, which answer a 400 naming the
+        right endpoint before they answer anything useful. An account with
+        several hundred open orders will exhaust the daily quota here and get
+        itself 429'd if the list is not filtered first.
+
+        So the list rows are filtered twice before anything is fetched: by
+        status, because a closed order has nothing on its way, and by
+        supplier, because a run ordering from one supplier does not need to
+        read every other supplier's paperwork.
         """
-        purchases: list[PurchaseOrder] = []
+        supplier_ids = set(suppliers)
+        supplier_names = {
+            name.strip().lower() for name in suppliers.values() if name
+        }
+
+        wanted: list[schema.PurchaseListEntry] = []
+        other_suppliers = 0
+        unattributed = 0
 
         for row in self.client.paginate(schema.ENDPOINT_PURCHASE_LIST):
-            purchase_id, status, _reference = schema.parse_purchase_list_entry(row)
-            if not purchase_id:
+            entry = schema.parse_purchase_list_entry(row)
+            if not entry.id:
                 continue
-            if status in schema.CLOSED_STATUSES:
+            if entry.status in schema.CLOSED_STATUSES:
                 continue
+            if not entry.is_for_supplier(supplier_ids, supplier_names):
+                other_suppliers += 1
+                continue
+            if not entry.names_a_supplier:
+                unattributed += 1
+            wanted.append(entry)
 
-            detail = self._fetch_purchase(purchase_id, result)
+        # Read off the client, not off self.config.api. They are the same
+        # ApiConfig in production, but the client is the object that actually
+        # spends the calls and owns the daily budget, so keeping both limits
+        # on one object means they cannot drift apart.
+        limit = self.client.config.max_purchase_details
+        over_budget = wanted[limit:]
+        purchases: list[PurchaseOrder] = []
+
+        for entry in wanted[:limit]:
+            detail = self._fetch_purchase(entry.id, result)
             if detail is None:
                 continue
             parsed = schema.parse_purchase(detail)
             if parsed is not None:
                 purchases.append(parsed)
 
+        self._report_purchase_coverage(
+            result,
+            read=len(wanted) - len(over_budget),
+            other_suppliers=other_suppliers,
+            unattributed=unattributed,
+            over_budget=len(over_budget),
+            limit=limit,
+        )
+
         return purchases
+
+    def _report_purchase_coverage(
+        self,
+        result: RunResult,
+        *,
+        read: int,
+        other_suppliers: int,
+        unattributed: int,
+        over_budget: int,
+        limit: int,
+    ) -> None:
+        """Say plainly which open orders were not read, and why.
+
+        Each of these is a way inbound stock can be understated, and an
+        understated inbound figure is what makes this tool re-order goods
+        already in transit. None of them is visible in the numbers themselves,
+        so they have to be stated.
+        """
+        result.notes.append(
+            f"Read {read} open purchase order(s) for inbound stock."
+        )
+
+        if other_suppliers:
+            result.notes.append(
+                f"{other_suppliers} open purchase order(s) belong to suppliers "
+                "this run is not ordering from and were not read. If one of "
+                "them happens to carry a product listed below, that product's "
+                "inbound figure is understated."
+            )
+
+        if unattributed:
+            result.warnings.append(
+                f"{unattributed} open purchase order(s) carry no supplier on "
+                "the list endpoint, so each had to be read in full to find "
+                "out. If that count is large, the supplier field name in "
+                "`parse_purchase_list_entry` in schema.py is wrong and this "
+                "run is much more expensive than it needs to be."
+            )
+
+        if not over_budget:
+            return
+
+        message = (
+            f"{over_budget} open purchase order(s) were not read: the run hit "
+            f"its limit of {limit} purchase reads (`api.max_purchase_details` "
+            "in config.yaml). Whatever they have on order is missing from the "
+            "inbound figures, so those products may look shorter than they are."
+        )
+
+        if self.dry_run:
+            result.warnings.append("INBOUND STOCK MAY BE UNDERSTATED. " + message)
+            return
+
+        # Same reasoning as an unreadable purchase: creating orders from a
+        # partial view of what is already coming costs real money.
+        raise Cin7Error(
+            message
+            + " Refusing to create purchase orders from an incomplete view of "
+            "what is already on its way."
+        )
 
     def _fetch_purchase(
         self, purchase_id: str, result: RunResult

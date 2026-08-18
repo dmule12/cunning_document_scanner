@@ -161,6 +161,12 @@ class ApiConfig:
     page_size: int = 500
     daily_call_budget: int = 4000
     timeout_seconds: float = 60.0
+    #: How many individual purchase orders one run may read. Purchases are
+    #: the only thing fetched one at a time, at one call each — two for
+    #: Advanced purchases — so this is what stands between a busy account and
+    #: the daily quota. Reaching it understates inbound stock, so `plan` says
+    #: so loudly and `apply` refuses to write.
+    max_purchase_details: int = 250
 
 
 @dataclass(frozen=True)
@@ -220,6 +226,7 @@ class Config:
             page_size=int(api_raw.get("page_size", 500)),
             daily_call_budget=int(api_raw.get("daily_call_budget", 4000)),
             timeout_seconds=float(api_raw.get("timeout_seconds", 60)),
+            max_purchase_details=int(api_raw.get("max_purchase_details", 250)),
         )
 
         return cls(
