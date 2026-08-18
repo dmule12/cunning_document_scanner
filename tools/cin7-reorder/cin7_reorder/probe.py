@@ -34,6 +34,7 @@ class ProbeFinding:
 def run_probe(client: Cin7Client, *, sample_size: int = 5) -> list[ProbeFinding]:
     return [
         _probe_connectivity(client),
+        _probe_include_flags(client),
         _probe_bom_components(client, sample_size),
         _probe_purchase_receipts(client, sample_size),
         _probe_draft_update(client),
@@ -92,6 +93,95 @@ BOM_FILTER_PARAMS = {"onlyProductsWithBOM": "true"}
 BOM_SCAN_PAGES = 10
 
 
+def _probe_include_flags(client: Cin7Client) -> ProbeFinding:
+    """Do the include flags still work, and do they work together?
+
+    Each was confirmed alone. Sending them combined is what the real run
+    does, and an API that honoured only the first would put us straight back
+    to silently empty collections.
+    """
+    question = "Do the product include-flags work when sent together?"
+
+    scanned = 0
+    populated: dict[str, int] = {}
+
+    for page in range(1, 4):
+        result = client.try_get(
+            schema.ENDPOINT_PRODUCT,
+            page=page,
+            limit=500,
+            **schema.PRODUCT_INCLUDE_FLAGS,
+        )
+        if not result.ok:
+            return ProbeFinding(
+                question=question,
+                answer="PRODUCT ENDPOINT FAILED",
+                ok=False,
+                detail=result.detail,
+                fix=(
+                    "Without these flags Cin7 returns every nested collection "
+                    "empty, which reads as missing data rather than an error."
+                ),
+            )
+
+        records = schema.extract_list(result.payload)
+        if not records:
+            break
+        scanned += len(records)
+
+        for record in records:
+            for key in ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers"):
+                value = record.get(key)
+                if isinstance(value, list) and value:
+                    populated[key] = populated.get(key, 0) + 1
+
+        if len(populated) == 3 or len(records) < 500:
+            break
+
+    missing = [
+        key
+        for key in ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers")
+        if key not in populated
+    ]
+
+    summary = ", ".join(
+        f"{key}={populated.get(key, 0)}"
+        for key in ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers")
+    )
+
+    if "Suppliers" in missing:
+        return ProbeFinding(
+            question=question,
+            answer="SUPPLIERS NOT POPULATED",
+            ok=False,
+            detail=(
+                f"Across {scanned} product(s): {summary} (counts are products "
+                "with a non-empty collection)."
+            ),
+            fix=(
+                "Without supplier links every product is skipped as having no "
+                "supplier, so the run produces nothing. Re-check the flag with "
+                "`dump --flags --id <a-product-you-order-regularly>`."
+            ),
+        )
+
+    return ProbeFinding(
+        question=question,
+        answer="YES" if not missing else "PARTIALLY",
+        ok=not missing,
+        detail=(
+            f"Across {scanned} product(s): {summary} (counts are products with "
+            "a non-empty collection)."
+        ),
+        fix=(
+            ""
+            if not missing
+            else f"No product had: {', '.join(missing)}. That may just mean "
+            "none is configured, rather than a broken flag."
+        ),
+    )
+
+
 def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
     """Can a pack SKU be mapped to the base units it contains?
 
@@ -106,7 +196,12 @@ def _probe_bom_components(client: Cin7Client, sample_size: int) -> ProbeFinding:
     with_bom: list[dict] = []
 
     for page in range(1, BOM_SCAN_PAGES + 1):
-        result = client.try_get(schema.ENDPOINT_PRODUCT, page=page, limit=500)
+        result = client.try_get(
+            schema.ENDPOINT_PRODUCT,
+            page=page,
+            limit=500,
+            **schema.PRODUCT_INCLUDE_FLAGS,
+        )
         if not result.ok:
             return ProbeFinding(
                 question=question,

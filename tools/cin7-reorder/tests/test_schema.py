@@ -62,6 +62,69 @@ def test_as_optional_float_keeps_absent_distinct_from_zero():
 # ---------------------------------------------------------------------------
 
 
+def test_supplier_comes_from_the_suppliers_collection():
+    """A product record has no DefaultSupplierID field.
+
+    The supplier lives in the Suppliers collection, which only appears when
+    IncludeSuppliers=true is sent. Reading a flat field instead left every
+    product supplier-less, and the run skipped everything silently.
+    """
+    product = {
+        "ID": "p1",
+        "SKU": "SLV-1",
+        "Suppliers": [{"SupplierID": "sup-9", "Name": "BioPak"}],
+    }
+    parsed = schema.parse_product(product)
+    assert parsed.supplier_id == "sup-9"
+    assert parsed.supplier_name == "BioPak"
+
+
+def test_default_supplier_wins_over_the_first_listed():
+    product = {
+        "ID": "p1",
+        "SKU": "SLV-1",
+        "Suppliers": [
+            {"SupplierID": "sup-1", "Name": "Second choice"},
+            {"SupplierID": "sup-2", "Name": "Preferred", "IsDefault": True},
+        ],
+    }
+    assert schema.parse_product(product).supplier_id == "sup-2"
+
+
+def test_first_supplier_used_when_none_is_marked_default():
+    product = {
+        "ID": "p1",
+        "SKU": "SLV-1",
+        "Suppliers": [
+            {"SupplierID": "sup-1"},
+            {"SupplierID": "sup-2"},
+        ],
+    }
+    assert schema.parse_product(product).supplier_id == "sup-1"
+
+
+def test_empty_suppliers_collection_means_no_supplier():
+    """What an unflagged request returns — must not look like a valid answer."""
+    parsed = schema.parse_product({"ID": "p1", "SKU": "SLV-1", "Suppliers": []})
+    assert parsed.supplier_id is None
+
+
+def test_flat_supplier_field_still_works_if_present():
+    parsed = schema.parse_product(
+        {"ID": "p1", "SKU": "SLV-1", "DefaultSupplierID": "sup-flat"}
+    )
+    assert parsed.supplier_id == "sup-flat"
+
+
+def test_include_flags_cover_every_needed_collection():
+    """Guards the silent failure: a missing flag empties a collection."""
+    assert schema.PRODUCT_INCLUDE_FLAGS == {
+        "IncludeBOM": "true",
+        "IncludeReorderLevels": "true",
+        "IncludeSuppliers": "true",
+    }
+
+
 def test_parses_bom_from_a_product_record():
     """The shape confirmed against a live account.
 
