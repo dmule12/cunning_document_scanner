@@ -121,6 +121,110 @@ def fetch_detail(client: Cin7Client, product_id: str) -> Optional[dict]:
     return None
 
 
+#: Collections the v2 product endpoint returns empty, on both list and detail
+#: reads. Each is needed by the reorder run, so if none of the deep-lookup
+#: strategies fills them the data has to come from somewhere other than the
+#: product endpoint.
+WANTED_COLLECTIONS = ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers")
+
+
+def deep_lookup(client: Cin7Client, product_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """Try every plausible way to get a product's nested collections.
+
+    ``GET /product?ID=`` returns the right product but with every collection
+    empty. Before concluding the API cannot supply them, this tries the older
+    API version, a path-style fetch, and a couple of include-style flags.
+
+    Returns one row per strategy: its label, whether it worked, and how many
+    entries each wanted collection came back with.
+    """
+    v1 = client.base_url_v1
+    strategies: list[tuple[str, Optional[str], str, dict[str, Any]]] = [
+        ("v2 product?ID=", None, schema.ENDPOINT_PRODUCT, {"ID": product_id}),
+        ("v1 Product?ID=", v1, "Product", {"ID": product_id}),
+        ("v1 product?ID=", v1, "product", {"ID": product_id}),
+        (
+            "v2 product?ID=&IncludeBOM",
+            None,
+            schema.ENDPOINT_PRODUCT,
+            {"ID": product_id, "IncludeBOM": "true"},
+        ),
+        (
+            "v2 product?ID=&IncludeAll",
+            None,
+            schema.ENDPOINT_PRODUCT,
+            {"ID": product_id, "IncludeAll": "true"},
+        ),
+        ("v2 productFamily?ID=", None, "productFamily", {"ID": product_id}),
+        ("v2 product/{id}", None, f"product/{product_id}", {}),
+    ]
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+
+    for label, base, path, params in strategies:
+        result = client.try_get(path, base_url=base, **params)
+        row: dict[str, Any] = {"ok": result.ok, "detail": result.detail}
+
+        if result.ok:
+            records = schema.extract_list(result.payload)
+            if not records and isinstance(result.payload, dict):
+                if schema.get_first(result.payload, "ID"):
+                    records = [result.payload]
+
+            if records:
+                record = records[0]
+                row["sku"] = schema.as_str(schema.get_first(record, "SKU"))
+                for key in WANTED_COLLECTIONS:
+                    value = record.get(key)
+                    row[key] = len(value) if isinstance(value, list) else "absent"
+            else:
+                row["ok"] = False
+                row["detail"] = "no records"
+
+        rows.append((label, row))
+
+    return rows
+
+
+def render_deep(product_id: str, rows: list[tuple[str, dict[str, Any]]]) -> str:
+    out = ["", "=" * 78, f"DEEP LOOKUP — {product_id}", "=" * 78, ""]
+    out.append(
+        "  Each strategy, and how many entries each collection came back with."
+    )
+    out.append("  A number above zero anywhere means the data is reachable.")
+    out.append("")
+
+    header = f"  {'strategy':<28} {'BOM':>6} {'Reorder':>8} {'Suppliers':>10}"
+    out.append(header)
+    out.append("  " + "-" * (len(header) - 2))
+
+    any_success = False
+    for label, row in rows:
+        if not row["ok"]:
+            out.append(f"  {label:<28} {row['detail'][:40]}")
+            continue
+        bom = row.get("BillOfMaterialsProducts", "?")
+        reorder = row.get("ReorderLevels", "?")
+        suppliers = row.get("Suppliers", "?")
+        if any(isinstance(v, int) and v > 0 for v in (bom, reorder, suppliers)):
+            any_success = True
+        out.append(f"  {label:<28} {bom:>6} {reorder:>8} {suppliers:>10}")
+
+    out.append("")
+    if any_success:
+        out.append("  ✓ At least one strategy returned data. Use that one.")
+    else:
+        out.append(
+            "  ✗ Every strategy returned empty collections.\n"
+            "    If the Cin7 UI shows a bill of materials for this product,\n"
+            "    the API is withholding it and the mapping must come from\n"
+            "    config. If the UI is also empty, the BOM was never filled in\n"
+            "    and this is a data task in Cin7."
+        )
+    out.append("")
+    return "\n".join(out)
+
+
 def compare_list_and_detail(list_record: dict, detail: Optional[dict]) -> list[str]:
     """Report which nested collections the detail call filled in."""
     if detail is None:
