@@ -82,8 +82,8 @@ def evaluate(
             detail=(
                 f"{product.sku} is a component of "
                 f"{len(conflict.pack_product_ids)} packs "
-                f"({', '.join(conflict.pack_product_ids)}). Cannot choose one "
-                "safely — fix the BOM data."
+                f"({', '.join(conflict.pack_skus or conflict.pack_product_ids)}). "
+                "Cannot choose one safely — fix the BOM data."
             ),
         )
 
@@ -101,15 +101,39 @@ def evaluate(
     # Trigger is inclusive: reaching the minimum means reorder. It is a floor
     # you are not meant to sit on, not a level you are allowed to touch.
     if position > demand.reorder_point + EPSILON:
+        # Distinguish "there is plenty on the shelf" from "there would not be,
+        # were it not for the boxes already in transit". The second is the
+        # whole reason this tool exists — Cin7's own low-stock reorder cannot
+        # see that inbound, because it sits against the pack SKU — and lumping
+        # the two together hides every duplicate order actually prevented.
+        on_shelf = demand.on_hand - demand.allocated
+        covered_by_inbound = (
+            demand.inbound_base > 0 and on_shelf <= demand.reorder_point + EPSILON
+        )
         return None, SkippedProduct(
             base_product_id=product.id,
             base_sku=product.sku,
             location=demand.location,
-            reason=SkipReason.SUFFICIENT_STOCK,
+            reason=(
+                SkipReason.COVERED_BY_INBOUND
+                if covered_by_inbound
+                else SkipReason.SUFFICIENT_STOCK
+            ),
             detail=(
                 f"position {position:g} above minimum {demand.reorder_point:g} "
                 f"(on hand {demand.on_hand:g}, inbound {demand.inbound_base:g}, "
                 f"allocated {demand.allocated:g})"
+                + (
+                    f" — would have re-ordered without the "
+                    f"{demand.inbound_base:g} already on its way"
+                    + (
+                        f" ({', '.join(demand.inbound_sources)})"
+                        if demand.inbound_sources
+                        else ""
+                    )
+                    if covered_by_inbound
+                    else ""
+                )
             ),
         )
 

@@ -107,7 +107,12 @@ def reconstruct(
     inbound = InboundStock()
 
     for purchase in purchases:
-        status = purchase.status.value if purchase.status else "?"
+        # The raw string, not the parsed enum. "UNKNOWN" tells a reader
+        # nothing they can act on; the actual value is what goes into
+        # _STATUS_MAP to stop it happening again.
+        status = purchase.raw_status or (
+            purchase.status.value if purchase.status else "?"
+        )
 
         def record(verdict: str, base_units: float = 0.0, outstanding: int = 0) -> None:
             inbound.audit.append(
