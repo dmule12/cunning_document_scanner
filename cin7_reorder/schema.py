@@ -570,9 +570,16 @@ _STATUS_MAP = {
     "DRAFT": PurchaseStatus.DRAFT,
     "AUTHORISED": PurchaseStatus.AUTHORISED,
     "AUTHORIZED": PurchaseStatus.AUTHORISED,
+    # Stages on the way to authorised. Open: stock is still expected.
+    "ORDERED": PurchaseStatus.AUTHORISED,
+    "ORDERING": PurchaseStatus.AUTHORISED,
+    "RECEIVING": PurchaseStatus.AUTHORISED,
     "RECEIVED": PurchaseStatus.RECEIVED,
     "COMPLETED": PurchaseStatus.COMPLETED,
     "COMPLETE": PurchaseStatus.COMPLETED,
+    # Confirmed on a live account: 32 orders carried OrderStatus=CLOSED and
+    # were read as UNKNOWN, which means open, which means a detail call each.
+    "CLOSED": PurchaseStatus.COMPLETED,
     "VOIDED": PurchaseStatus.VOIDED,
     "VOID": PurchaseStatus.VOIDED,
 }
@@ -725,25 +732,53 @@ class PurchaseListEntry:
     supplier_id: Optional[str] = None
     supplier_name: Optional[str] = None
     receiving_status: Optional[str] = None
+    #: Cin7's own lifecycle status, which is a different field from the order
+    #: status and frequently disagrees with it. On a live account 1966 orders
+    #: read ``Status=COMPLETED`` while ``OrderStatus=AUTHORISED``.
+    lifecycle_status: PurchaseStatus = PurchaseStatus.UNKNOWN
+    #: "Simple Purchase", "Advanced Purchase", "Service Purchase".
+    order_type: Optional[str] = None
 
     @property
     def is_closed(self) -> bool:
         """Whether this order can have no more stock on its way.
 
-        ``Status`` alone is not enough. Cin7 leaves a purchase AUTHORISED for
-        its whole life and tracks arrival separately, so an order placed,
-        received and invoiced two years ago still reads as authorised. Taking
-        ``Status`` at face value makes almost every purchase the account has
-        ever raised look open — and each one then costs a detail call.
+        A single status field is not enough, because Cin7 keeps three of them
+        and they disagree. An order placed, received and invoiced in 2019 can
+        still read ``OrderStatus=AUTHORISED`` — arrival is tracked separately.
+        Taking that at face value makes almost every purchase the account has
+        ever raised look open, and each one then costs a detail call.
 
-        The receiving status is what actually says whether anything is still
-        coming.
+        So: closed if either status says so, or if the receiving status says
+        everything has arrived. Anything else is open, including a receiving
+        status this code does not recognise — being wrong in that direction
+        costs a call, and being wrong in the other costs a duplicate order.
         """
         if self.status in CLOSED_STATUSES:
+            return True
+        if self.lifecycle_status in CLOSED_STATUSES:
             return True
         if self.receiving_status is None:
             return False
         return self.receiving_status.strip().upper() in FULLY_RECEIVED_STATUSES
+
+    @property
+    def is_advanced(self) -> Optional[bool]:
+        """Whether ``/purchase`` will refuse this one, if the row says.
+
+        ``None`` means the row does not say and both endpoints must be tried.
+        Knowing in advance is worth a call per purchase: ``/purchase`` answers
+        an Advanced or Service purchase with a 400 naming the right endpoint,
+        so asking it first is a wasted request.
+        """
+        if not self.order_type:
+            return None
+        lowered = self.order_type.strip().lower()
+        if "advanced" in lowered or "service" in lowered:
+            return True
+        if "simple" in lowered:
+            return False
+        return None
 
     @property
     def names_a_supplier(self) -> bool:
@@ -790,6 +825,8 @@ def parse_purchase_list_entry(payload: Mapping[str, Any]) -> PurchaseListEntry:
                 "StockReceivedStatus",
             )
         ),
+        lifecycle_status=parse_status(get_first(payload, "Status")),
+        order_type=as_str(get_first(payload, "Type", "PurchaseType", "OrderType")),
     )
 
 
