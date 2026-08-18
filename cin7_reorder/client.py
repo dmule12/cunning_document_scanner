@@ -200,7 +200,11 @@ class Cin7Client:
 
         for path in candidates:
             result = self.try_get(path, **params)
-            if result.ok:
+            # An empty body does not count. Cin7 returns `{}` for some paths,
+            # and accepting that would "resolve" an endpoint that yields
+            # nothing — which then reads downstream as "no data exists"
+            # rather than "wrong endpoint".
+            if result.ok and _has_content(result.payload):
                 if path != candidates[0]:
                     log.info("Resolved endpoint %r -> %r", candidates[0], path)
                 self._endpoint_cache[key] = path
@@ -370,6 +374,25 @@ class Cin7Client:
                 return
 
             page += 1
+
+
+def _has_content(payload: Any) -> bool:
+    """Whether a response actually carries records.
+
+    Used only for endpoint resolution, where an empty-but-valid body is
+    indistinguishable from a wrong path unless you check.
+    """
+    if isinstance(payload, list):
+        return bool(payload)
+    if isinstance(payload, dict):
+        if not payload:
+            return False
+        # An envelope of nothing but empty lists is still nothing.
+        values = list(payload.values())
+        if values and all(isinstance(v, list) and not v for v in values):
+            return False
+        return True
+    return payload is not None
 
 
 def _clean(params: dict[str, Any]) -> dict[str, Any]:

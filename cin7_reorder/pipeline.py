@@ -109,7 +109,7 @@ class Pipeline:
         products, reorder_params, boms = self._load_products()
         bom = self._build_bom_index(boms, result)
         availability = self._load_availability(result)
-        purchases = self._load_purchases()
+        purchases = self._load_purchases(result)
 
         our_drafts = {
             p.id: p
@@ -281,7 +281,7 @@ class Pipeline:
             found[(parsed.product_id, parsed.location)] = parsed
         return found
 
-    def _load_purchases(self) -> list[PurchaseOrder]:
+    def _load_purchases(self, result: RunResult) -> list[PurchaseOrder]:
         """Open purchases, in full.
 
         The list endpoint is a cheap pre-filter: closed purchases never cost a
@@ -297,31 +297,42 @@ class Pipeline:
             if status in schema.CLOSED_STATUSES:
                 continue
 
-            detail = self._fetch_purchase(purchase_id)
-            parsed = schema.parse_purchase(detail if isinstance(detail, dict) else {})
+            detail = self._fetch_purchase(purchase_id, result)
+            if detail is None:
+                continue
+            parsed = schema.parse_purchase(detail)
             if parsed is not None:
                 purchases.append(parsed)
 
         return purchases
 
-    def _fetch_purchase(self, purchase_id: str) -> dict:
+    def _fetch_purchase(
+        self, purchase_id: str, result: RunResult
+    ) -> Optional[dict]:
         """One purchase, from whichever endpoint serves its type.
 
         Cin7 has several kinds of purchase order and ``/purchase`` refuses
         Advanced and Service ones with a 400 naming the endpoint to use
-        instead. Neither endpoint serves everything, so both are needed.
+        instead. Neither endpoint serves everything, so both are tried.
 
-        A purchase that cannot be read is fatal rather than skipped: its
-        contents are unknown, so the inbound figure would be understated by
-        an unknown amount, and understated inbound means re-ordering stock
-        that is already on its way. That is the exact failure this tool
-        exists to prevent, so it must not be papered over.
+        When a purchase cannot be read at all, what happens depends on what
+        the run is for. Its contents are unknown, so inbound stock is
+        understated by an unknown amount — and understated inbound means
+        re-ordering goods already in transit, the exact failure this tool
+        exists to prevent.
+
+        So ``apply`` stops: writing a purchase order off incomplete inbound
+        data costs real money. ``plan`` continues with a prominent warning,
+        because a report you can read and judge is more useful than no report
+        at all, and it writes nothing either way.
         """
-        result = self.client.try_get(schema.ENDPOINT_PURCHASE, ID=purchase_id)
-        if result.ok and isinstance(result.payload, dict):
-            return result.payload
+        response = self.client.try_get(schema.ENDPOINT_PURCHASE, ID=purchase_id)
+        if response.ok and isinstance(response.payload, dict):
+            return response.payload
 
-        if schema.DEPRECATED_ENDPOINT_MARKER in (result.detail or ""):
+        reason = response.detail or "unknown error"
+
+        if schema.DEPRECATED_ENDPOINT_MARKER in reason:
             endpoint = self.client.resolve_endpoint(
                 schema.ADVANCED_PURCHASE_CANDIDATES, ID=purchase_id
             )
@@ -329,20 +340,27 @@ class Pipeline:
                 advanced = self.client.try_get(endpoint, ID=purchase_id)
                 if advanced.ok and isinstance(advanced.payload, dict):
                     return advanced.payload
-
-            raise Cin7Error(
-                f"Purchase {purchase_id} needs the AdvancedPurchase endpoint, "
-                "but none of "
-                f"{', '.join(schema.ADVANCED_PURCHASE_CANDIDATES)} worked. "
-                "Its contents are unknown, so inbound stock would be "
-                "understated and the run could re-order goods already on "
-                "their way."
+            reason = (
+                "it is an Advanced or Service purchase, and none of "
+                f"{', '.join(schema.ADVANCED_PURCHASE_CANDIDATES)} served it"
             )
 
+        message = (
+            f"Could not read open purchase {purchase_id}: {reason}. Anything it "
+            "has on order is missing from the inbound figures below, so those "
+            "products may look shorter than they are."
+        )
+
+        if self.dry_run:
+            result.warnings.append(
+                "INBOUND STOCK MAY BE UNDERSTATED. " + message
+            )
+            return None
+
         raise Cin7Error(
-            f"Could not read purchase {purchase_id}: {result.detail}. Stopping "
-            "rather than computing inbound stock from an incomplete set of "
-            "open purchase orders."
+            message
+            + " Refusing to create purchase orders from an incomplete view of "
+            "what is already on its way."
         )
 
     # -- evaluation --------------------------------------------------------
