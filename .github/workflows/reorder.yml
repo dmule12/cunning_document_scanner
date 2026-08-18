@@ -1,0 +1,126 @@
+name: Cin7 reorder
+
+# Twice-weekly reorder run.
+#
+# DELIBERATELY `plan` ONLY. It computes the reorder and uploads a report; it
+# does not create or update anything in Cin7. Switching to `apply` is a
+# conscious one-line change, and should not happen until:
+#
+#   1. `probe` passes against the live account, and
+#   2. `plan` has run for at least one full supplier lead time and its numbers
+#      have been checked against what you would have ordered by hand.
+#
+# See README.md, "Known unknowns".
+
+on:
+  schedule:
+    # Tuesday and Friday, 06:00 UTC.
+    #
+    # A schedule only ever fires from the repository's default branch. On any
+    # other branch it is inert, with nothing to say so.
+    - cron: "0 6 * * 2,5"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Which command to run"
+        required: true
+        default: plan
+        type: choice
+        options: [probe, plan]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never let two runs compute against the same stock at once.
+  group: cin7-reorder
+  cancel-in-progress: false
+
+jobs:
+  reorder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        # The arithmetic is the deliverable. If it regresses, do not go on to
+        # produce a reorder report that looks authoritative.
+        run: python -m pytest -q
+
+      - name: Restore draft fingerprints
+        # Fingerprints record what we last wrote to each draft, so a human's
+        # edit can be detected and left alone. Losing them is not dangerous —
+        # the tool then declines to touch the draft — but it does stop the
+        # update path working, permanently and silently: every run would find
+        # its own standing draft, have no record of writing it, and leave it.
+        #
+        # This is a cache and not download-artifact deliberately.
+        # download-artifact only sees artifacts from the *current* run unless
+        # given a run-id, so that wiring restores nothing, ever, while looking
+        # entirely correct. The cache's restore-keys prefix gives us "the most
+        # recent one", which is the actual requirement.
+        #
+        # Caches are evicted after 7 days unused; this runs Tuesday and Friday
+        # and a restore counts as use, so it survives on this schedule.
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: cin7-reorder-state-${{ github.run_id }}
+          restore-keys: cin7-reorder-state-
+
+      - name: Probe
+        if: inputs.command == 'probe'
+        env:
+          CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
+          CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
+        run: |
+          # probe prints to stdout; it takes no report flags.
+          python -m cin7_reorder probe | tee report.md
+
+      - name: Plan
+        if: inputs.command != 'probe'
+        env:
+          CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
+          CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
+        run: |
+          python -m cin7_reorder plan \
+            --output report.md \
+            --json report.json
+
+      - name: Summarise
+        # Puts the whole report on the run's summary page, so it can be read
+        # without downloading anything.
+        if: always()
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cin7-reorder-report
+          path: |
+            report.md
+            report.json
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Save draft fingerprints
+        # Only on success. A run that died partway through may have written
+        # some drafts and not others; persisting that would teach the next run
+        # a fingerprint for work it cannot vouch for.
+        if: success() && inputs.command != 'probe'
+        run: mkdir -p state
+
+      - uses: actions/cache/save@v4
+        if: success() && inputs.command != 'probe'
+        with:
+          path: state
+          key: cin7-reorder-state-${{ github.run_id }}

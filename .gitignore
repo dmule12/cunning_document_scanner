@@ -1,0 +1,36 @@
+# Credentials. CIN7_ACCOUNT_ID and CIN7_APP_KEY are equivalent to a login and
+# password for the whole account, so this line is the one that matters most in
+# the file. .env.example is committed and holds no real values.
+.env
+.env.*
+!.env.example
+
+# Draft fingerprints — what the tool last wrote to each purchase order, so a
+# human's edit can be detected and left alone. Local runtime state, restored
+# from a cache in CI.
+state/
+
+# Run output.
+report.md
+report.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

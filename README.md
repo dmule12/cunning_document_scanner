@@ -3,7 +3,7 @@
 Computes stock shortfalls on base SKUs and raises **draft** purchase orders against the
 pack SKUs your suppliers actually sell.
 
-Background and reasoning: [`docs/cin7-po-automation-feasibility.md`](../../docs/cin7-po-automation-feasibility.md).
+Background and reasoning: [`docs/cin7-po-automation-feasibility.md`](docs/cin7-po-automation-feasibility.md).
 
 ---
 
@@ -232,10 +232,12 @@ assumed away.
 Needs Python 3.10 or newer.
 
 ```bash
-cd tools/cin7-reorder
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
+
+On Windows the interpreter is at `.venv\Scripts\python` rather than
+`.venv/bin/python`; substitute throughout.
 
 ### Credentials
 
