@@ -30,7 +30,14 @@ suppliers:
   # to run with an empty pin unless --no-pin is passed explicitly.
   #
   # Put a single supplier ID here for the first live runs.
-  pin: []
+  #
+  # Set, so that the scheduled run does the same thing as the manual runs this
+  # was checked against. Without it the schedule would fall back to the
+  # attribute in Cin7 and quietly cover a different set of suppliers than
+  # anyone has reviewed output for. Matched on an ID or a case-insensitive
+  # fragment of the supplier name.
+  pin:
+    - BioPak
 
 # ---------------------------------------------------------------------------
 # Locations

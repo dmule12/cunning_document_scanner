@@ -58,13 +58,23 @@ jobs:
       - name: Restore draft fingerprints
         # Fingerprints record what we last wrote to each draft, so a human's
         # edit can be detected and left alone. Losing them is not dangerous —
-        # the tool then declines to touch existing drafts — but it does stop
-        # the update path working.
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+        # the tool then declines to touch the draft — but it does stop the
+        # update path working, permanently and silently: every run would find
+        # its own standing draft, have no record of writing it, and leave it.
+        #
+        # This is a cache and not download-artifact deliberately.
+        # download-artifact only sees artifacts from the *current* run unless
+        # given a run-id, so the previous wiring restored nothing, ever, while
+        # looking entirely correct. The cache's restore-keys prefix gives us
+        # "the most recent one", which is the actual requirement.
+        #
+        # Caches are evicted after 7 days unused; this runs Tuesday and Friday
+        # and a restore counts as use, so it survives on this schedule.
+        uses: actions/cache/restore@v4
         with:
-          name: cin7-reorder-state
           path: tools/cin7-reorder/state
+          key: cin7-reorder-state-${{ github.run_id }}
+          restore-keys: cin7-reorder-state-
 
       - name: Probe
         if: inputs.command == 'probe'
@@ -100,10 +110,14 @@ jobs:
           retention-days: 90
 
       - name: Save draft fingerprints
-        if: always()
-        uses: actions/upload-artifact@v4
+        # Only on success. A run that died partway through may have written
+        # some drafts and not others; persisting that would teach the next run
+        # a fingerprint for work it cannot vouch for.
+        if: success() && inputs.command != 'probe'
+        run: mkdir -p state
+
+      - uses: actions/cache/save@v4
+        if: success() && inputs.command != 'probe'
         with:
-          name: cin7-reorder-state
           path: tools/cin7-reorder/state
-          retention-days: 90
-          if-no-files-found: ignore
+          key: cin7-reorder-state-${{ github.run_id }}
