@@ -49,6 +49,15 @@ from .models import (
 # ---------------------------------------------------------------------------
 
 ENDPOINT_PRODUCT = "product"
+
+#: Cin7 hides each nested collection on a product behind its own opt-in query
+#: flag. Without them the collections come back as empty lists on both the
+#: list and the by-ID read, which looks exactly like "this product has no
+#: bill of materials" — a silent, expensive misreading.
+#:
+#: ``IncludeBOM`` is confirmed against a live account. ``IncludeAll`` does
+#: NOT work, so each collection needs its own flag.
+PRODUCT_INCLUDE_FLAGS = {"IncludeBOM": "true"}
 ENDPOINT_PRODUCT_AVAILABILITY = "productAvailability"
 ENDPOINT_BILL_OF_MATERIALS = "BillOfMaterials"
 ENDPOINT_SUPPLIER = "supplier"

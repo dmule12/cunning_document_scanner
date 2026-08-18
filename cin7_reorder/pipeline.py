@@ -180,7 +180,12 @@ class Pipeline:
         params: dict[str, list[ReorderParameters]] = {}
         boms: list[BillOfMaterials] = []
 
-        for record in self.client.paginate(schema.ENDPOINT_PRODUCT):
+        # The include flags matter enormously: without them Cin7 returns every
+        # nested collection as an empty list, which reads as "no product has a
+        # bill of materials" rather than as an error. Silent and expensive.
+        for record in self.client.paginate(
+            schema.ENDPOINT_PRODUCT, **schema.PRODUCT_INCLUDE_FLAGS
+        ):
             product = schema.parse_product(record)
             if product is None:
                 continue

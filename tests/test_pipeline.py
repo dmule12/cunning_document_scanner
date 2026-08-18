@@ -191,6 +191,41 @@ def test_run_completes_without_aborting(pipeline):
     assert result.aborted is None
 
 
+def test_product_reads_send_the_include_flags(tmp_path):
+    """Without IncludeBOM, Cin7 returns every nested collection empty.
+
+    That reads as "no product has a bill of materials" rather than as an
+    error, so the run would quietly order everything in base units. This
+    guards the exact regression: a product endpoint call with no flags.
+    """
+    seen: list[dict] = []
+
+    def recording_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/product"):
+            seen.append(dict(request.url.params))
+        return handler(request)
+
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=200),
+        read_only=True,
+        transport=httpx.MockTransport(recording_handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    Pipeline(
+        client=client,
+        config=Config(),
+        state_path=tmp_path / "s.json",
+        dry_run=True,
+    ).run()
+
+    assert seen, "the product endpoint was never called"
+    for params in seen:
+        assert params.get("IncludeBOM") == "true", (
+            f"product read without IncludeBOM: {params}"
+        )
+
+
 def test_only_opted_in_suppliers_are_considered(pipeline):
     result = pipeline.run()
     assert result.suppliers_considered == ["Opted-in Supplier"]
