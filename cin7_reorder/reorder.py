@@ -145,7 +145,7 @@ def evaluate(
         flags.append(LineFlag.ORDERED_AS_BASE_UNIT)
     else:
         order_product_id = link.pack_product_id
-        order_sku = link.pack_product_id
+        order_sku = link.display_sku
         units_per_pack = link.units_per_pack
         quantity = math.ceil((order_base - EPSILON) / units_per_pack)
 

@@ -15,6 +15,65 @@ def test_resolves_base_sku_to_its_pack(bom):
     assert link.units_per_pack == UNITS_PER_BOX
 
 
+def test_the_pack_carries_its_sku_not_just_its_id():
+    """A GUID is not something anyone can order, or key an MOQ by.
+
+    This shipped wrong: every pack line in the report named a GUID in the
+    "Ordered as" column, and `moq` overrides in config.yaml — which are
+    written against SKUs — silently matched nothing at all.
+    """
+    index = BomIndex.build(
+        [
+            BillOfMaterials(
+                parent_product_id="guid-box",
+                parent_sku="BOX-024",
+                components=(BomComponent(component_product_id=SLEEVE, quantity=24),),
+            )
+        ]
+    )
+
+    link = index.resolve(SLEEVE)
+    assert link.pack_sku == "BOX-024"
+    assert link.display_sku == "BOX-024"
+
+
+def test_a_pack_with_no_sku_falls_back_to_its_id():
+    """Never render an empty cell. A GUID at least identifies the record."""
+    index = BomIndex.build(
+        [
+            BillOfMaterials(
+                parent_product_id="guid-box",
+                components=(BomComponent(component_product_id=SLEEVE, quantity=24),),
+            )
+        ]
+    )
+
+    assert index.resolve(SLEEVE).display_sku == "guid-box"
+
+
+def test_a_conflict_names_the_packs_by_sku():
+    """A conflict is a data problem someone has to fix in Cin7 by hand.
+
+    They cannot do that from a list of GUIDs.
+    """
+    index = BomIndex.build(
+        [
+            BillOfMaterials(
+                parent_product_id="guid-12",
+                parent_sku="BOX-012",
+                components=(BomComponent(component_product_id=SLEEVE, quantity=12),),
+            ),
+            BillOfMaterials(
+                parent_product_id="guid-24",
+                parent_sku="BOX-024",
+                components=(BomComponent(component_product_id=SLEEVE, quantity=24),),
+            ),
+        ]
+    )
+
+    assert index.conflict_for(SLEEVE).pack_skus == ("BOX-012", "BOX-024")
+
+
 def test_product_with_no_pack_resolves_to_none(bom):
     assert bom.resolve(SINGLE) is None
     assert bom.conflict_for(SINGLE) is None

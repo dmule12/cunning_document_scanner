@@ -24,6 +24,14 @@ class PackLink:
     base_product_id: str
     pack_product_id: str
     units_per_pack: float
+    #: What a human reads on the purchase order, and what MOQ overrides in
+    #: config.yaml are keyed by. Defaults to the id so nothing can render as
+    #: empty, but a report showing a GUID here means the SKU never arrived.
+    pack_sku: str = ""
+
+    @property
+    def display_sku(self) -> str:
+        return self.pack_sku or self.pack_product_id
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,9 @@ class Conflict:
 
     base_product_id: str
     pack_product_ids: tuple[str, ...]
+    #: The packs by SKU. A conflict is a data problem someone has to go and
+    #: fix in Cin7, and a list of GUIDs is not something anyone can act on.
+    pack_skus: tuple[str, ...] = ()
 
 
 class BomIndex:
@@ -69,6 +80,7 @@ class BomIndex:
                         base_product_id=component.component_product_id,
                         pack_product_id=bom.parent_product_id,
                         units_per_pack=component.quantity,
+                        pack_sku=bom.parent_sku or bom.parent_product_id,
                     )
                 )
 
@@ -86,11 +98,15 @@ class BomIndex:
                     base_product_id=base_id,
                     pack_product_id=found[0].pack_product_id,
                     units_per_pack=total,
+                    pack_sku=found[0].pack_sku,
                 )
             else:
                 conflicts[base_id] = Conflict(
                     base_product_id=base_id,
                     pack_product_ids=tuple(sorted(distinct_parents)),
+                    pack_skus=tuple(
+                        sorted({link.display_sku for link in found})
+                    ),
                 )
 
         pack_ids = frozenset(bom.parent_product_id for bom in boms)
