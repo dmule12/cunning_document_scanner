@@ -401,60 +401,76 @@ def _probe_supplier_attributes(client: Cin7Client, sample_size: int) -> ProbeFin
     """
     question = "Which supplier attribute slot holds the opt-in flag?"
 
-    try:
-        payload = client.get(schema.ENDPOINT_SUPPLIER, page=1, limit=sample_size)
-    except Cin7Error as exc:
-        return ProbeFinding(
-            question=question, answer="ENDPOINT FAILED", ok=False, detail=str(exc)
-        )
+    scanned = 0
+    with_set = 0
+    populated: list[str] = []
 
-    records = schema.extract_list(payload)
-    if not records:
-        return ProbeFinding(
-            question=question, answer="NO SUPPLIERS RETURNED", ok=False
-        )
+    # Scan properly rather than peeking at the first few. Suppliers come back
+    # alphabetically, so a five-record sample only ever sees names starting
+    # with digits and 'A' — and would report "nothing configured" however
+    # carefully the account had been set up.
+    for page in range(1, 5):
+        result = client.try_get(schema.ENDPOINT_SUPPLIER, page=page, limit=500)
+        if not result.ok:
+            return ProbeFinding(
+                question=question,
+                answer="ENDPOINT FAILED",
+                ok=False,
+                detail=result.detail,
+            )
 
-    lines: list[str] = []
-    any_populated = False
+        records = schema.extract_list(result.payload)
+        if not records:
+            break
+        scanned += len(records)
 
-    for record in records:
-        name = schema.parse_supplier_name(record) or "(unnamed)"
-        attribute_set = schema.as_str(schema.get_first(record, "AttributeSet")) or "—"
-        slots = schema.supplier_attribute_slots(record)
-        if slots:
-            any_populated = True
-            rendered = ", ".join(f"{k}={v!r}" for k, v in slots.items())
-        else:
-            rendered = "no attribute slots populated"
-        lines.append(f"{name} [set: {attribute_set}]: {rendered}")
+        for record in records:
+            name = schema.parse_supplier_name(record) or "(unnamed)"
+            attribute_set = schema.as_str(schema.get_first(record, "AttributeSet"))
+            if attribute_set:
+                with_set += 1
 
-    if not any_populated:
+            slots = schema.supplier_attribute_slots(record)
+            if slots:
+                rendered = ", ".join(f"{k}={v!r}" for k, v in slots.items())
+                populated.append(f"{name} [set: {attribute_set or '—'}]: {rendered}")
+
+        if len(records) < 500:
+            break
+
+    if not populated:
         return ProbeFinding(
             question=question,
             answer="NO SLOTS POPULATED YET",
             ok=None,
             detail=(
-                "Supplier attribute slots exist but none of the sampled "
-                "suppliers has a value in any of them.\n        "
-                + "\n        ".join(lines)
+                f"Scanned {scanned} supplier(s); {with_set} have an attribute "
+                "set assigned, and none has a value in any slot."
             ),
             fix=(
-                "This is setup you still need to do, not a code problem. In "
-                "Cin7: Settings → Reference books → Other Items → Additional "
-                "Attributes, create an 'Auto Reorder' attribute in a set "
-                "applied to suppliers, then set it to Yes on the one supplier "
-                "you want automated. Re-run this probe and it will show which "
-                "numbered slot the value landed in; put that slot name in "
-                "`suppliers.attribute_field` in config.yaml.\n        "
-                "Until then, list supplier IDs under `suppliers.pin` instead."
+                "In Cin7: Settings → Reference books → Other Items → Additional "
+                "Attributes, create an 'Auto Reorder' attribute (Checkbox is "
+                "fine) in a set applied to suppliers. Then — the step that is "
+                "easy to miss — open the supplier itself, assign it that "
+                "attribute set, tick the box, and save. Creating the set does "
+                "not attach it to anyone.\n        "
+                "Meanwhile `--supplier \"<name>\"` runs against a chosen "
+                "supplier without needing any of this."
             ),
         )
+
+    shown = populated[:10]
+    more = len(populated) - len(shown)
+    detail = f"Scanned {scanned} supplier(s); {len(populated)} have a slot set.\n        "
+    detail += "\n        ".join(shown)
+    if more:
+        detail += f"\n        …and {more} more."
 
     return ProbeFinding(
         question=question,
         answer="SLOTS IN USE — pick the right one",
         ok=True,
-        detail="\n        ".join(lines),
+        detail=detail,
         fix=(
             "Put the slot holding your opt-in flag into "
             "`suppliers.attribute_field` in config.yaml, e.g. "
@@ -465,86 +481,113 @@ def _probe_supplier_attributes(client: Cin7Client, sample_size: int) -> ProbeFin
 
 
 def _probe_reorder_parameters(client: Cin7Client, sample_size: int) -> ProbeFinding:
-    question = "Are MinimumBeforeReorder / ReorderQuantity exposed on products?"
+    question = "How much of the catalogue has a usable reorder point?"
 
-    try:
-        payload = client.get(
+    scanned = 0
+    products_orderable = 0
+    trigger_without_quantity = 0
+    with_supplier = 0
+    examples: list[str] = []
+    first_keys: list[str] = []
+
+    # Scan the catalogue rather than sampling. The answer people actually
+    # need here is "how much of my catalogue is eligible", and that is a
+    # proportion, not an anecdote from the first five rows.
+    for page in range(1, 11):
+        result = client.try_get(
             schema.ENDPOINT_PRODUCT,
-            page=1,
-            limit=sample_size,
+            page=page,
+            limit=500,
             **schema.PRODUCT_INCLUDE_FLAGS,
         )
-    except Cin7Error as exc:
-        return ProbeFinding(
-            question=question, answer="ENDPOINT FAILED", ok=False, detail=str(exc)
-        )
-
-    records = schema.extract_list(payload)
-    if not records:
-        return ProbeFinding(question=question, answer="NO PRODUCTS", ok=False)
-
-    usable: list[str] = []
-    minimum_seen = 0
-    trigger_without_quantity = 0
-
-    for record in records:
-        for params in schema.parse_reorder_parameters(record):
-            has_minimum = (
-                params.minimum_before_reorder is not None
-                and params.minimum_before_reorder > 0
+        if not result.ok:
+            return ProbeFinding(
+                question=question,
+                answer="ENDPOINT FAILED",
+                ok=False,
+                detail=result.detail,
             )
-            if has_minimum:
-                minimum_seen += 1
-            if params.is_complete:
-                where = (
-                    "product level"
-                    if params.location is None
-                    else f"location {params.location}"
-                )
-                usable.append(
-                    f"{params.product_id} ({where}): min "
-                    f"{params.minimum_before_reorder:g}, reorder qty "
-                    f"{params.reorder_quantity:g}"
-                )
-            elif has_minimum:
+
+        records = schema.extract_list(result.payload)
+        if not records:
+            break
+        if not first_keys:
+            first_keys = sorted(records[0].keys())
+        scanned += len(records)
+
+        for record in records:
+            product = schema.parse_product(record)
+            has_supplier = bool(product and product.supplier_id)
+
+            complete = [
+                p for p in schema.parse_reorder_parameters(record) if p.is_complete
+            ]
+            partial = [
+                p
+                for p in schema.parse_reorder_parameters(record)
+                if not p.is_complete
+                and p.minimum_before_reorder
+                and p.minimum_before_reorder > 0
+            ]
+
+            if complete:
+                products_orderable += 1
+                if has_supplier:
+                    with_supplier += 1
+                if len(examples) < 3:
+                    p = complete[0]
+                    where = (
+                        "product level"
+                        if p.location is None
+                        else f"location {p.location}"
+                    )
+                    examples.append(
+                        f"{product.sku if product else p.product_id} ({where}): "
+                        f"min {p.minimum_before_reorder:g}, qty "
+                        f"{p.reorder_quantity:g}"
+                    )
+            elif partial:
                 trigger_without_quantity += 1
 
-    if not minimum_seen:
+        if len(records) < 500:
+            break
+
+    if not products_orderable:
         return ProbeFinding(
             question=question,
-            answer="NO REORDER POINTS in the sample",
-            ok=None,
+            answer="NONE",
+            ok=False,
             detail=(
-                f"Product record keys: {sorted(records[0].keys())}. No product "
-                "in the sample had a MinimumBeforeReorder above zero."
+                f"Scanned {scanned} product(s); none had both a "
+                "MinimumBeforeReorder above zero and a ReorderQuantity."
             ),
-            sample_keys=sorted(records[0].keys()),
+            sample_keys=first_keys,
             fix=(
-                "Either these products genuinely have no reorder point set — "
-                "in which case the tool will skip them, which is intended — or "
-                "the key differs. Check MINIMUM_KEYS and REORDER_QUANTITY_KEYS "
-                "in schema.py against the keys listed above. Try a larger "
-                "--sample-size, or a product you know has a low-stock reorder "
-                "point configured."
+                "Either no product has a low-stock reorder point configured in "
+                "Cin7 — in which case the tool correctly has nothing to do — or "
+                "the field names differ. Check MINIMUM_KEYS and "
+                "REORDER_QUANTITY_KEYS in schema.py against the keys above."
             ),
         )
 
+    pct = 100.0 * products_orderable / scanned if scanned else 0.0
     detail = (
-        f"{len(usable)} usable reorder point(s) in {len(records)} sampled "
-        f"product(s). Examples: " + "; ".join(usable[:3])
+        f"{products_orderable} of {scanned} product(s) scanned ({pct:.0f}%) have "
+        f"both a reorder point and a quantity; {with_supplier} of those also "
+        f"have a supplier and so can actually be ordered.\n        "
+        f"Examples: " + "; ".join(examples)
     )
     if trigger_without_quantity:
         detail += (
-            f" — {trigger_without_quantity} had a minimum but no reorder "
-            "quantity, and will be skipped and reported."
+            f"\n        {trigger_without_quantity} product(s) have a minimum but "
+            "no reorder quantity — those are skipped and listed in the report."
         )
 
     return ProbeFinding(
         question=question,
-        answer="YES",
+        answer=f"{products_orderable} product(s) eligible",
         ok=True,
         detail=detail,
-        sample_keys=sorted(records[0].keys()),
     )
 
 
