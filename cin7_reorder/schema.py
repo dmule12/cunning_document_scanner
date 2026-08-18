@@ -62,7 +62,23 @@ PRODUCT_INCLUDE_FLAGS = {
     "IncludeReorderLevels": "true",  # -> ReorderLevels
     "IncludeSuppliers": "true",  # -> Suppliers
 }
+#: UNRESOLVED. ``productAvailability`` returns Cin7's not-found redirect on
+#: this account, exactly as the phantom /BillOfMaterials endpoint did. The
+#: candidates below are tried in order by ``find_availability_endpoint``, and
+#: the winner is cached for the rest of the run.
 ENDPOINT_PRODUCT_AVAILABILITY = "productAvailability"
+
+AVAILABILITY_ENDPOINT_CANDIDATES = (
+    "productAvailability",
+    "ProductAvailability",
+    "productavailability",
+    "availability",
+    "stockAvailability",
+    "productAvailabilityList",
+    "ref/productAvailability",
+    "stockOnHand",
+    "stockLevels",
+)
 ENDPOINT_BILL_OF_MATERIALS = "BillOfMaterials"
 ENDPOINT_SUPPLIER = "supplier"
 ENDPOINT_LOCATION = "ref/location"

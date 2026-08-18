@@ -362,7 +362,19 @@ def _run(
         typer.echo(f"Wrote JSON to {json_output}")
 
     if result.aborted:
+        # Writing a report and exiting quietly buries the reason. Say it on
+        # the terminal, where the person who ran the command is looking.
+        typer.secho(
+            f"\nRUN ABORTED: {result.aborted}", fg=typer.colors.RED, err=True
+        )
         raise typer.Exit(code=1)
+
+    if not result.lines:
+        typer.secho(
+            "\nNo order lines. That is a real answer if nothing is below its "
+            "reorder point — check the skip reasons in the report to be sure.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 def main() -> None:

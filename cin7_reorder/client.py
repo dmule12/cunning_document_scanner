@@ -124,6 +124,7 @@ class Cin7Client:
         self.call_count = 0
 
         self._limiter = rate_limiter or _RateLimiter()
+        self._endpoint_cache: dict[str, Optional[str]] = {}
         self._client = httpx.Client(
             base_url=credentials.base_url,
             headers={
@@ -176,6 +177,31 @@ class Cin7Client:
         return ProbeResult(
             path=url, ok=True, status=response.status_code, payload=payload
         )
+
+    def resolve_endpoint(
+        self, candidates: tuple[str, ...], **params: Any
+    ) -> Optional[str]:
+        """The first candidate path that returns JSON, or ``None``.
+
+        Cin7 answers an unknown path with a 302 to an HTML error page rather
+        than a 404, so "did this return JSON" is the only reliable test. The
+        result is cached: resolution costs one wasted call per miss, and the
+        same endpoint gets hit repeatedly during a run.
+        """
+        key = candidates[0]
+        if key in self._endpoint_cache:
+            return self._endpoint_cache[key]
+
+        for path in candidates:
+            result = self.try_get(path, **params)
+            if result.ok:
+                if path != candidates[0]:
+                    log.info("Resolved endpoint %r -> %r", candidates[0], path)
+                self._endpoint_cache[key] = path
+                return path
+
+        self._endpoint_cache[key] = None
+        return None
 
     @property
     def base_url_v1(self) -> str:
