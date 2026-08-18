@@ -35,6 +35,8 @@ from .dump import (
     find_products_with_bom,
     render,
     render_deep,
+    render_flag_sweep,
+    sweep_include_flags,
 )
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
@@ -109,6 +111,11 @@ def dump(
         "--deep",
         help="Try every way of retrieving a product's nested collections. Needs --id.",
     ),
+    flags: bool = typer.Option(
+        False,
+        "--flags",
+        help="Sweep candidate Include* flags to see which fills which collection. Needs --id.",
+    ),
     keys_only: bool = typer.Option(
         False,
         "--keys-only",
@@ -129,14 +136,22 @@ def dump(
         )
         raise typer.Exit(code=2)
 
-    if deep and not product_id:
-        typer.secho("--deep needs --id.", fg=typer.colors.RED, err=True)
+    if (deep or flags) and not product_id:
+        typer.secho(
+            "--deep and --flags need --id.", fg=typer.colors.RED, err=True
+        )
         raise typer.Exit(code=2)
 
     _setup_logging(verbose)
     credentials, config = _load(config_path)
 
     with Cin7Client(credentials, config.api, read_only=True) as client:
+        if flags:
+            rows, winners = sweep_include_flags(client, product_id)
+            typer.echo(render_flag_sweep(rows, winners))
+            typer.echo(f"API calls used: {client.call_count}")
+            return
+
         if deep:
             rows = deep_lookup(client, product_id)
             typer.echo(render_deep(product_id, rows))

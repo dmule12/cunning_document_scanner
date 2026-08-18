@@ -109,7 +109,9 @@ def fetch_detail(client: Cin7Client, product_id: str) -> Optional[dict]:
     back as ``[]`` there even when populated. Detail is the only way to see
     them.
     """
-    result = client.try_get(schema.ENDPOINT_PRODUCT, ID=product_id)
+    result = client.try_get(
+        schema.ENDPOINT_PRODUCT, ID=product_id, **schema.PRODUCT_INCLUDE_FLAGS
+    )
     if not result.ok:
         return None
 
@@ -126,6 +128,113 @@ def fetch_detail(client: Cin7Client, product_id: str) -> Optional[dict]:
 #: strategies fills them the data has to come from somewhere other than the
 #: product endpoint.
 WANTED_COLLECTIONS = ("BillOfMaterialsProducts", "ReorderLevels", "Suppliers")
+
+
+#: Cin7 gates each nested collection behind its own opt-in query flag.
+#: ``IncludeBOM=true`` is confirmed to populate ``BillOfMaterialsProducts``;
+#: ``IncludeAll=true`` does nothing, so the others need their own flags.
+#: This is the candidate list for finding them.
+INCLUDE_FLAG_CANDIDATES = (
+    "IncludeBOM",
+    "IncludeBillOfMaterials",
+    "IncludeSuppliers",
+    "IncludeSupplier",
+    "IncludeProductSuppliers",
+    "IncludeReorderLevels",
+    "IncludeReorder",
+    "IncludeReorderLevel",
+    "IncludeLocations",
+    "IncludeStockLocations",
+    "IncludeDetails",
+    "IncludeAttachments",
+    "IncludeMovements",
+    "IncludePriceTiers",
+)
+
+
+def sweep_include_flags(
+    client: Cin7Client, product_id: str
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, str]]:
+    """Try each candidate include-flag alone, and see what it fills in.
+
+    Returns the per-flag results plus a mapping of collection name to the
+    first flag that populated it, so the caller can report exactly which
+    flags the real run needs to send.
+    """
+    rows: list[tuple[str, dict[str, Any]]] = []
+    winners: dict[str, str] = {}
+
+    for flag in INCLUDE_FLAG_CANDIDATES:
+        result = client.try_get(
+            schema.ENDPOINT_PRODUCT, ID=product_id, **{flag: "true"}
+        )
+        row: dict[str, Any] = {"ok": result.ok, "detail": result.detail}
+
+        if result.ok:
+            records = schema.extract_list(result.payload)
+            if not records and isinstance(result.payload, dict):
+                if schema.get_first(result.payload, "ID"):
+                    records = [result.payload]
+
+            if records:
+                record = records[0]
+                for key in WANTED_COLLECTIONS:
+                    value = record.get(key)
+                    count = len(value) if isinstance(value, list) else 0
+                    row[key] = count
+                    if count > 0 and key not in winners:
+                        winners[key] = flag
+            else:
+                row["ok"] = False
+                row["detail"] = "no records"
+
+        rows.append((flag, row))
+
+    return rows, winners
+
+
+def render_flag_sweep(
+    rows: list[tuple[str, dict[str, Any]]], winners: dict[str, str]
+) -> str:
+    out = ["", "=" * 78, "INCLUDE-FLAG SWEEP", "=" * 78, ""]
+    out.append("  Each flag sent alone. Numbers are entries returned.")
+    out.append("")
+
+    header = f"  {'flag':<26} {'BOM':>6} {'Reorder':>8} {'Suppliers':>10}"
+    out.append(header)
+    out.append("  " + "-" * (len(header) - 2))
+
+    for flag, row in rows:
+        if not row["ok"]:
+            out.append(f"  {flag:<26} {row['detail'][:38]}")
+            continue
+        out.append(
+            f"  {flag:<26} "
+            f"{row.get('BillOfMaterialsProducts', 0):>6} "
+            f"{row.get('ReorderLevels', 0):>8} "
+            f"{row.get('Suppliers', 0):>10}"
+        )
+
+    out.append("")
+    out.append("  RESULT")
+    for key in WANTED_COLLECTIONS:
+        flag = winners.get(key)
+        if flag:
+            out.append(f"    {key:<26} ← {flag}=true")
+        else:
+            out.append(f"    {key:<26} ← NO FLAG FOUND")
+    out.append("")
+
+    missing = [k for k in WANTED_COLLECTIONS if k not in winners]
+    if missing:
+        out.append(
+            "  Collections with no working flag may simply be empty on this\n"
+            "  product. Try --flags against a product you know has suppliers\n"
+            "  and a per-location reorder level set."
+        )
+        out.append("")
+
+    return "\n".join(out)
 
 
 def deep_lookup(client: Cin7Client, product_id: str) -> list[tuple[str, dict[str, Any]]]:
