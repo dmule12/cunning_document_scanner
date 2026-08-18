@@ -20,6 +20,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from cin7_reorder import schema
 from cin7_reorder.client import Cin7Client, NullRateLimiter
 from cin7_reorder.config import ApiConfig, Config, Credentials, SupplierConfig
 from cin7_reorder.pipeline import Pipeline
@@ -231,6 +232,39 @@ def test_an_order_with_no_receiving_status_is_treated_as_open(tmp_path):
     assert fetched == ["quiet-1"]
 
 
+#: Rows shaped exactly as a live account returns them, from a survey of 2312
+#: purchase orders. The three status fields disagree with each other on almost
+#: every row, which is the whole reason this needs testing rather than reading.
+LIVE_SHAPES = [
+    # 1946 rows looked like this: authorised forever, received years ago.
+    ({"OrderStatus": "AUTHORISED", "Status": "COMPLETED",
+      "CombinedReceivingStatus": "FULLY RECEIVED"}, True),
+    # 32 rows. OrderStatus=CLOSED was read as UNKNOWN, so as open.
+    ({"OrderStatus": "CLOSED", "Status": "COMPLETED",
+      "CombinedReceivingStatus": "FULLY RECEIVED"}, True),
+    ({"OrderStatus": "VOIDED", "Status": "VOIDED",
+      "CombinedReceivingStatus": "NOT AVAILABLE"}, True),
+    # The ones that genuinely have stock coming.
+    ({"OrderStatus": "AUTHORISED", "Status": "ORDERED",
+      "CombinedReceivingStatus": "NOT RECEIVED"}, False),
+    ({"OrderStatus": "AUTHORISED", "Status": "RECEIVING",
+      "CombinedReceivingStatus": "PARTIALLY RECEIVED"}, False),
+    ({"OrderStatus": "DRAFT", "Status": "DRAFT",
+      "CombinedReceivingStatus": ""}, False),
+    # Invoiced but nothing received: the money moved, the goods have not.
+    ({"OrderStatus": "AUTHORISED", "Status": "INVOICED",
+      "CombinedReceivingStatus": "NOT RECEIVED"}, False),
+]
+
+
+@pytest.mark.parametrize("row,closed", LIVE_SHAPES)
+def test_live_status_combinations(row, closed):
+    entry = schema.parse_purchase_list_entry({"ID": "x", **row})
+    assert entry.is_closed is closed, (
+        f"{row} was read as {'closed' if entry.is_closed else 'open'}"
+    )
+
+
 def test_coverage_is_reported_not_silent(tmp_path):
     """A number computed from a partial view has to say so.
 
@@ -359,6 +393,53 @@ def test_advanced_purchases_stop_paying_the_400_tax(tmp_path):
         "on the first purchase, and never again"
     )
     assert len([c for c in calls if c.startswith("advanced:")]) == 6
+
+
+def test_the_type_field_skips_the_400_entirely(tmp_path):
+    """The list row says which kind of purchase it is. Believe it.
+
+    ``Type`` is "Simple Purchase" / "Advanced Purchase" / "Service Purchase",
+    which means the wasted 400 need never be paid at all — not even once.
+    """
+    rows = [
+        {
+            "ID": f"ours-{n}",
+            "OrderStatus": "AUTHORISED",
+            "SupplierID": OURS,
+            "Type": "Advanced Purchase",
+        }
+        for n in range(6)
+    ]
+
+    result, calls = run_advanced(tmp_path, rows)
+
+    assert result.aborted is None
+    assert not [c for c in calls if c.startswith("purchase:")], (
+        "asked /purchase even though the row said the order was Advanced"
+    )
+
+
+def test_a_wrong_type_field_costs_a_call_not_an_order(tmp_path):
+    """The hint is a starting point, never a filter.
+
+    If Type says Simple and the endpoint disagrees, the order must still be
+    found. A dropped order is inbound stock that vanishes, and this tool
+    exists to stop exactly that.
+    """
+    rows = [
+        {
+            "ID": "adv-1",
+            "OrderStatus": "AUTHORISED",
+            "SupplierID": OURS,
+            "Type": "Simple Purchase",  # a lie, as far as the endpoints care
+        }
+    ]
+
+    result, _calls = run_advanced(tmp_path, rows)
+
+    assert result.aborted is None
+    line = next(ln for ln in result.lines if ln.base_sku == "CUP")
+    assert line.inbound_base == 1, "the order was dropped rather than retried"
 
 
 def test_a_simple_purchase_among_advanced_ones_is_still_read(tmp_path):

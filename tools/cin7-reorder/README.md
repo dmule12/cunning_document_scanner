@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 182 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 191 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -22,6 +22,7 @@ A first `probe` run has settled some of this. Current state:
 | Bills of materials, supplier links, reorder levels | ✅ Reachable — behind include-flags, see below |
 | Stock levels | ✅ At `ref/productAvailability`, not the documented `productAvailability` |
 | Advanced and Service purchases | ✅ At `advanced-purchase` — hyphenated, resolved at runtime |
+| Purchase list statuses, supplier keys, order type | ✅ Surveyed across 2312 live orders |
 | Whether a draft purchase can be updated | Untested — needs a manual write |
 
 `probe` is still the first command to run.
@@ -131,25 +132,43 @@ what actually arrived lives in a separate field. So `Status` alone makes very
 nearly every purchase the account has ever raised look open — five pages of
 list rows, and a detail call for each.
 
-`CombinedReceivingStatus` is the field that answers the question. It is matched
-against the whole string, never a token, because **"PARTIALLY RECEIVED"
-contains "RECEIVED"** and means the opposite. Getting that backwards would
-close an order with stock still on the water, which understates inbound and
-re-orders goods already paid for — quieter and more expensive than the mistake
-it replaced.
+A list row carries **three** status fields and they disagree with each other on
+almost every row. Measured across 2312 orders on a live account:
 
-An order with no receiving status at all is treated as open. Silence is not
-evidence of arrival.
+| | |
+| --- | --- |
+| `OrderStatus=AUTHORISED` | 1946 |
+| `Status=COMPLETED` | 1966 |
+| `CombinedReceivingStatus=FULLY RECEIVED` | 2214 |
+| Genuinely open | **34** |
 
-### Advanced purchases cost double, once
+`CombinedReceivingStatus` is the field that answers the question, with both
+status fields as a cross-check. It is matched against the whole string, never a
+token, because **"PARTIALLY RECEIVED" contains "RECEIVED"** and means the
+opposite. Getting that backwards would close an order with stock still on the
+water, which understates inbound and re-orders goods already paid for — quieter
+and more expensive than the mistake it replaced.
+
+An order with no receiving status, or one this code does not recognise, is
+treated as open. Silence is not evidence of arrival. Being wrong in that
+direction costs a call; being wrong in the other costs a duplicate order.
+
+`OrderStatus=CLOSED` is real and was missing from the status map — 32 orders
+were reading as unknown, and unknown means open.
+
+### Advanced purchases cost double, but need not
 
 `/purchase` refuses an Advanced or Service purchase with a 400 naming the right
 endpoint, so reading one the obvious way costs two calls: a refusal and an
-answer. Accounts are not mixed at random, so whichever endpoint served the last
-purchase is tried first. On an account where every order is an Advanced
-purchase the 400 is paid once, on the first order, and never again. The other
-endpoint is still tried on a miss — the preference is an optimisation, never a
-filter.
+answer.
+
+The list row's **`Type`** field — "Simple Purchase", "Advanced Purchase",
+"Service Purchase" — says which it is, so the refusal need never be paid at
+all. Where `Type` is missing, whichever endpoint served the last purchase is
+tried first, since accounts tend to use one kind for nearly everything.
+
+Both are only ever a starting point. The other endpoint is still tried on a
+miss, so a wrong guess costs a call and never an order.
 
 A response is only accepted if it carries the ID that was asked for. Trying
 endpoints in turn means occasionally asking the wrong one, and a wrong endpoint
@@ -322,7 +341,7 @@ number every run, and **voiding in Cin7 is permanent.**
 .venv/bin/python -m pytest
 ```
 
-182 tests, offline, well under a second. The ones that matter most:
+191 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while

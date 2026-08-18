@@ -355,7 +355,9 @@ class Pipeline:
         purchases: list[PurchaseOrder] = []
 
         for entry in wanted[:limit]:
-            detail = self._fetch_purchase(entry.id, result)
+            detail = self._fetch_purchase(
+                entry.id, result, advanced_hint=entry.is_advanced
+            )
             if detail is None:
                 continue
             parsed = schema.parse_purchase(detail)
@@ -451,7 +453,11 @@ class Pipeline:
         return response.payload
 
     def _fetch_purchase(
-        self, purchase_id: str, result: RunResult
+        self,
+        purchase_id: str,
+        result: RunResult,
+        *,
+        advanced_hint: Optional[bool] = None,
     ) -> Optional[dict]:
         """One purchase, from whichever endpoint serves its type.
 
@@ -470,13 +476,18 @@ class Pipeline:
         because a report you can read and judge is more useful than no report
         at all, and it writes nothing either way.
 
-        Accounts tend to use one purchase type for nearly everything, so
-        whichever endpoint served the last purchase is tried first. On an
-        account where every order is an Advanced purchase that halves the
-        cost of this stage, because ``/purchase`` answers each one with a 400
-        before answering anything useful.
+        Which endpoint to try first is decided in order of confidence:
+        ``advanced_hint`` from the list row's ``Type`` field, which says
+        outright; otherwise whichever endpoint served the last purchase,
+        since accounts tend to use one kind for nearly everything. Both are
+        only ever a starting point — the other endpoint is still tried on a
+        miss, so a wrong guess costs a call and never an order.
         """
-        if self._prefer_advanced:
+        prefer_advanced = (
+            self._prefer_advanced if advanced_hint is None else advanced_hint
+        )
+
+        if prefer_advanced:
             payload = self._read_advanced_purchase(purchase_id)
             if payload is not None:
                 return payload
