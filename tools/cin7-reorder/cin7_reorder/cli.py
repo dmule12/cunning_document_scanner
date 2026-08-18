@@ -29,10 +29,12 @@ from .client import Cin7Client
 from .config import Config, ConfigError, Credentials
 from .dump import (
     compare_list_and_detail,
+    deep_lookup,
     fetch_detail,
     find_product,
     find_products_with_bom,
     render,
+    render_deep,
 )
 from .pipeline import Pipeline
 from .probe import format_findings, run_probe
@@ -102,6 +104,11 @@ def dump(
         "--with-bom",
         help="Find products that carry a bill of materials, instead of by SKU.",
     ),
+    deep: bool = typer.Option(
+        False,
+        "--deep",
+        help="Try every way of retrieving a product's nested collections. Needs --id.",
+    ),
     keys_only: bool = typer.Option(
         False,
         "--keys-only",
@@ -122,10 +129,20 @@ def dump(
         )
         raise typer.Exit(code=2)
 
+    if deep and not product_id:
+        typer.secho("--deep needs --id.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
     _setup_logging(verbose)
     credentials, config = _load(config_path)
 
     with Cin7Client(credentials, config.api, read_only=True) as client:
+        if deep:
+            rows = deep_lookup(client, product_id)
+            typer.echo(render_deep(product_id, rows))
+            typer.echo(f"API calls used: {client.call_count}")
+            return
+
         if with_bom:
             records, scanned, notes = find_products_with_bom(client)
 
