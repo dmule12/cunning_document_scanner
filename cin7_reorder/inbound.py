@@ -137,7 +137,7 @@ def reconstruct(
             record("skipped — closed, nothing more coming")
             continue
 
-        if purchase.status is PurchaseStatus.DRAFT:
+        if purchase.is_draft:
             # A draft is not a commitment — nobody has sent it to the
             # supplier. Counting it as inbound would let an unsent draft
             # suppress a real reorder indefinitely. Drafts the automation

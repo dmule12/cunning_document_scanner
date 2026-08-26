@@ -141,7 +141,7 @@ class Pipeline:
         our_drafts = {
             p.id: p
             for p in purchases
-            if p.status is PurchaseStatus.DRAFT and is_ours(p)
+            if p.is_draft and is_ours(p)
         }
 
         inbound = reconstruct(
@@ -675,6 +675,7 @@ class Pipeline:
         purchase_id: str,
         reference: str,
         lines: list[dict],
+        fingerprint: str,
         updating: bool,
     ) -> None:
         """Put the lines on a purchase, by POST or PUT as needed.
@@ -688,6 +689,7 @@ class Pipeline:
             purchase_id=purchase_id,
             reference=reference,
             lines=lines,
+            fingerprint=fingerprint,
             extra=self.config.purchase.order_fields,
         )
 
@@ -751,8 +753,14 @@ class Pipeline:
             plan = decide(
                 existing=existing,
                 reference=reference,
+                # The purchase order's own memo first, the local file only as
+                # a fallback for drafts written before the memo carried it.
+                # The record travels with its own history; the file does not
+                # exist on a fresh checkout and did not survive CI.
                 stored_fingerprint=(
-                    store.get(existing.id) if existing is not None else None
+                    (existing.fingerprint or store.get(existing.id))
+                    if existing is not None
+                    else None
                 ),
             )
 
@@ -808,14 +816,16 @@ class Pipeline:
                 # The lines are a separate write. A purchase created without
                 # them is a real, visible, empty purchase order — so if this
                 # fails, say which one to go and delete.
+                written = fingerprint(lines)
                 self._write_order_lines(
                     purchase_id=purchase_id,
                     reference=reference,
                     lines=order_lines,
+                    fingerprint=written,
                     updating=updating,
                 )
 
-                store.set(purchase_id, fingerprint(lines))
+                store.set(purchase_id, written)
                 if updating:
                     result.drafts_updated.append(plan.reference)
                 else:

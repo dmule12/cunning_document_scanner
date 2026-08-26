@@ -654,6 +654,11 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
     if not isinstance(raw_lines, list):
         raw_lines = []
 
+    marker_reference, marker_fingerprint = split_marker(
+        as_str(get_first(payload, *PURCHASE_MARKER_KEYS))
+        or as_str(get_first(order_mapping, "Memo", "Reference"))
+    )
+
     received_by_product = _sum_received_quantities(payload)
 
     lines: list[PurchaseLine] = []
@@ -688,9 +693,16 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
         location=as_str(get_first(payload, "Location", "LocationName")) or "",
         # Not OrderNumber: that is Cin7's own PO-81146, present on every
         # purchase ever raised, and matching on it would claim the lot.
-        reference=(
-            as_str(get_first(payload, *PURCHASE_MARKER_KEYS))
-            or as_str(get_first(order_mapping, "Memo", "Reference"))
+        reference=marker_reference,
+        fingerprint=marker_fingerprint,
+        # The order stage's own status. Only read when there really is an
+        # Order block: order_mapping falls back to the payload itself, and
+        # taking the top-level Status here would defeat the whole point of
+        # distinguishing the two.
+        order_status=(
+            as_str(get_first(order, "Status")) or ""
+            if isinstance(order, Mapping)
+            else ""
         ),
         lines=tuple(lines),
         raw_status=raw_status,
@@ -879,7 +891,43 @@ DRAFT_ORDER_STATUS = "DRAFT"
 #: exactly that.
 #:
 #: So it goes in several places and is read back from all of them.
+#:
+#: Confirmed live: ``Note`` and ``Order.Memo`` both survive the write.
 PURCHASE_MARKER_KEYS = ("Reference", "Note", "Ref")
+
+#: Separates the reference from the fingerprint inside the marker.
+#:
+#: The fingerprint records what this tool last wrote, so a human's edit to a
+#: draft can be told from its own work and left alone. It used to live in a
+#: local JSON file, which meant it did not exist on a fresh checkout, did not
+#: survive a CI cache eviction — or a cache that simply failed to save, which
+#: is what happened — and differed between a laptop and a scheduled run.
+#:
+#: Keeping it on the purchase order removes all of that: the record carries
+#: its own history, and every runner reads the same truth.
+MARKER_FINGERPRINT_SEP = " fp="
+
+
+def build_marker(reference: str, fingerprint: Optional[str] = None) -> str:
+    """The string written to the marker fields."""
+    if not fingerprint:
+        return reference
+    return f"{reference}{MARKER_FINGERPRINT_SEP}{fingerprint}"
+
+
+def split_marker(text: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Recover ``(reference, fingerprint)`` from a marker string.
+
+    Tolerates a marker with no fingerprint — drafts written by earlier
+    versions have none, and they must still be recognised as ours rather than
+    read as somebody else's work.
+    """
+    if not text:
+        return None, None
+    reference, separator, fingerprint = text.partition(MARKER_FINGERPRINT_SEP)
+    if not separator:
+        return text.strip() or None, None
+    return reference.strip() or None, fingerprint.strip() or None
 
 
 def build_purchase_payload(
@@ -934,6 +982,7 @@ def build_order_payload(
     purchase_id: str,
     reference: str,
     lines: Sequence[Mapping[str, Any]],
+    fingerprint: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``POST``/``PUT /purchase/order`` body — the lines themselves.
@@ -946,7 +995,7 @@ def build_order_payload(
     payload.update(
         {
             "TaskID": purchase_id,
-            "Memo": reference,
+            "Memo": build_marker(reference, fingerprint),
             "Status": DRAFT_ORDER_STATUS,
             "Lines": [dict(line) for line in lines],
         }

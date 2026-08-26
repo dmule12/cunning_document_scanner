@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 223 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 232 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -26,7 +26,8 @@ A first `probe` run has settled some of this. Current state:
 | Inbound reconstruction | ✅ Working on live data — 4 duplicate orders prevented on the first clean run |
 | Creating a draft purchase order | ✅ Confirmed live — header, then lines to `purchase/order` |
 | The suggestions themselves | ✅ One run reviewed and ordered by hand from |
-| Whether a standing draft can be **updated** | Still untested — the first draft was authorised before a second run saw it |
+| Recognising its own standing draft | ✅ Fixed — read `Order.Status`, not the overall status |
+| Whether a standing draft can be **updated** | Still untested — needs a draft to survive a run |
 | Behaviour across a supplier lead time | Untested — needs partial receipts against real inbound |
 
 `probe` is still the first command to run.
@@ -382,6 +383,40 @@ automatically.
 
 ## Known unknowns
 
+### A draft reports itself as "ORDERING"
+
+Cin7 puts no `OrderStatus` on a purchase *detail* record, and reports a purchase
+whose order stage is still a draft as **`Status: "ORDERING"`** at the top level.
+That parses as authorised — reasonably, since it means an order is in progress.
+
+Draft-ness comes from **`Order.Status`** instead. Reading the overall status was
+wrong in two directions at once:
+
+- the tool never recognised its own standing draft, so it raised a **fresh
+  purchase order every run**; and
+- other people's abandoned drafts counted as **stock on its way**, which
+  suppresses reorders for goods that are never coming. One from 2020 was
+  contributing 410 base units.
+
+### The fingerprint lives on the purchase order
+
+What the tool last wrote to a draft is recorded in the order memo, next to the
+reference:
+
+```
+AUTO-REORDER-2026W35-WA-Warehouse-ba7067f4 fp=9c1f…
+```
+
+It used to live in a local JSON file, which did not exist on a fresh checkout,
+did not survive a CI cache eviction — or a cache that simply failed to save,
+which is what happened — and differed between a laptop and a scheduled run.
+Keeping it on the record means every runner reads the same truth, and the
+history travels with the thing it describes.
+
+A marker with no fingerprint is still recognised as ours. Drafts written by
+earlier versions have none, and reading them as somebody else's work would
+strand them permanently.
+
 ### Draft updates are still unproven
 
 Creating a draft is confirmed working. **Updating one is not**, and it cannot be tested
@@ -425,7 +460,7 @@ takes no lines at all rather than taking them and ignoring them.
 .venv/bin/python -m pytest
 ```
 
-223 tests, offline, well under a second. The ones that matter most:
+232 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
