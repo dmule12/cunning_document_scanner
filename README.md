@@ -318,6 +318,11 @@ It needs `CIN7_ACCOUNT_ID` and `CIN7_APP_KEY` as repository secrets, and only
 fires from the default branch — a cron on any other branch is inert with
 nothing to say so.
 
+There is no state to carry between runs. What the tool last wrote to a draft
+is on the draft, in its memo — see below — so a scheduled run, a re-run and a
+laptop all read the same truth, and there is no cache to evict, expire or fail
+to save.
+
 **`dump` runs from the dispatch menu too**, with its arguments in the
 `dump_args` field — `--purchase <guid>`, `--purchases`, `--sku ABC`. The point
 is that investigating does not require the Cin7 keys on anyone's laptop: the

@@ -59,27 +59,6 @@ jobs:
         # produce a reorder report that looks authoritative.
         run: python -m pytest -q
 
-      - name: Restore draft fingerprints
-        # Fingerprints record what we last wrote to each draft, so a human's
-        # edit can be detected and left alone. Losing them is not dangerous —
-        # the tool then declines to touch the draft — but it does stop the
-        # update path working, permanently and silently: every run would find
-        # its own standing draft, have no record of writing it, and leave it.
-        #
-        # This is a cache and not download-artifact deliberately.
-        # download-artifact only sees artifacts from the *current* run unless
-        # given a run-id, so that wiring restores nothing, ever, while looking
-        # entirely correct. The cache's restore-keys prefix gives us "the most
-        # recent one", which is the actual requirement.
-        #
-        # Caches are evicted after 7 days unused; this runs Tuesday and Friday
-        # and a restore counts as use, so it survives on this schedule.
-        uses: actions/cache/restore@v4
-        with:
-          path: state
-          key: cin7-reorder-state-${{ github.run_id }}
-          restore-keys: cin7-reorder-state-
-
       - name: Which command
         # A scheduled run supplies no inputs, so `apply` is what the schedule
         # means. Resolved once, here, rather than repeating the fallback in
@@ -205,21 +184,3 @@ jobs:
             report.json
           retention-days: 90
           if-no-files-found: ignore
-
-      - name: Save draft fingerprints
-        # Saved whenever `apply` ran, including when it failed or when the
-        # check above went red.
-        #
-        # The tool writes a fingerprint per draft as it goes, so the file
-        # already reflects exactly the drafts that succeeded — there is no
-        # half-written state to protect against. Skipping the save costs
-        # something real instead: without a fingerprint, `decide` cannot rule
-        # out a human edit and leaves that draft alone for good.
-        if: always() && steps.apply.outcome != 'skipped'
-        run: mkdir -p state
-
-      - uses: actions/cache/save@v4
-        if: always() && steps.apply.outcome != 'skipped'
-        with:
-          path: state
-          key: cin7-reorder-state-${{ github.run_id }}
