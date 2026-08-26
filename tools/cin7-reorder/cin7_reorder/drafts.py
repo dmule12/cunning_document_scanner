@@ -92,6 +92,7 @@ def decide(
     existing: Optional[PurchaseOrder],
     reference: str,
     stored_fingerprint: Optional[str],
+    desired_fingerprint: Optional[str] = None,
 ) -> DraftPlan:
     """Whether to create, update in place, or keep hands off."""
     if existing is None:
@@ -111,9 +112,31 @@ def decide(
         )
 
     if stored_fingerprint is None:
-        # Our reference, but no record of what we wrote — most likely the
-        # state file was lost. Overwriting could destroy an edit we cannot
-        # detect, so decline and let a human decide.
+        # Our reference, but no record of what we wrote.
+        #
+        # If the draft already says exactly what this run would write, the
+        # question is moot: updating it changes nothing, so there is no edit
+        # to destroy. Adopting it stamps the fingerprint on and lets the
+        # draft rejoin the normal cycle. Without this a draft written before
+        # fingerprints lived on the record — or one whose fingerprint was
+        # lost — would be left alone every run, for ever, with no way back
+        # except deleting it by hand.
+        if (
+            desired_fingerprint
+            and fingerprint_purchase(existing) == desired_fingerprint
+        ):
+            return DraftPlan(
+                decision=DraftDecision.UPDATE,
+                purchase_id=existing.id,
+                reference=existing.reference or reference,
+                reason=(
+                    "no stored fingerprint, but the draft already matches "
+                    "what this run would write, so adopting it changes nothing"
+                ),
+            )
+
+        # Otherwise decline: overwriting could destroy an edit we cannot
+        # detect, and a person should decide.
         return DraftPlan(
             decision=DraftDecision.LEAVE_ALONE,
             purchase_id=existing.id,

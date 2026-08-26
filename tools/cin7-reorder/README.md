@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 232 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 234 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -390,7 +390,7 @@ takes no lines at all rather than taking them and ignoring them.
 .venv/bin/python -m pytest
 ```
 
-232 tests, offline, well under a second. The ones that matter most:
+234 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
