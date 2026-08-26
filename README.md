@@ -317,6 +317,21 @@ It needs `CIN7_ACCOUNT_ID` and `CIN7_APP_KEY` as repository secrets, and only
 fires from the default branch — a cron on any other branch is inert with
 nothing to say so.
 
+**`dump` runs from the dispatch menu too**, with its arguments in the
+`dump_args` field — `--purchase <guid>`, `--purchases`, `--sku ABC`. The point
+is that investigating does not require the Cin7 keys on anyone's laptop: the
+runner already has them as secrets, and the output lands on the run summary
+page.
+
+Arguments reach the shell through the environment and are restricted to a
+plain character set, because an expression pasted straight into a `run:` block
+lets anyone who can dispatch the workflow execute arbitrary commands on the
+runner.
+
+Dump output includes whole records — supplier names, prices, sometimes
+addresses. The run summary is visible to anyone with access to the repository,
+which is a reason to keep it private.
+
 **The job goes red when something needs a person**, because nobody reads a
 green scheduled run and GitHub only emails on failure. Two conditions qualify:
 the run aborted, or a draft write failed and left an empty purchase order in

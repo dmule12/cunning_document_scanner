@@ -25,7 +25,12 @@ on:
         required: true
         default: plan
         type: choice
-        options: [probe, plan, apply]
+        options: [probe, plan, apply, dump]
+      dump_args:
+        description: "Arguments for dump, e.g. --purchase <guid>, --purchases, --sku ABC"
+        required: false
+        default: "--purchases"
+        type: string
 
 permissions:
   contents: read
@@ -92,6 +97,30 @@ jobs:
           # probe prints to stdout; it takes no report flags.
           python -m cin7_reorder probe | tee report.md
 
+      - name: Dump
+        # Read-only diagnostics, run where the credentials already live.
+        #
+        # The point is that nobody has to hold the Cin7 keys locally to
+        # investigate: the runner has them as secrets, and the output lands on
+        # the run summary page where it can be read.
+        #
+        # The arguments go through the environment rather than being pasted
+        # into the shell command by the expression, which would let anyone who
+        # can dispatch this workflow run arbitrary commands on the runner.
+        if: steps.cmd.outputs.value == 'dump'
+        env:
+          CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
+          CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
+          DUMP_ARGS: ${{ inputs.dump_args }}
+        run: |
+          case "$DUMP_ARGS" in
+            *[!A-Za-z0-9\ ._/=-]*)
+              echo "dump_args may only contain letters, digits, spaces and . _ - / ="
+              exit 1
+              ;;
+          esac
+          python -m cin7_reorder dump $DUMP_ARGS | tee report.md
+
       - name: Plan
         if: steps.cmd.outputs.value == 'plan'
         env:
@@ -127,7 +156,7 @@ jobs:
         # Ordinary warnings do not fail the run. A job that goes red twice a
         # week for something nobody needs to act on is a job people stop
         # looking at, which costs more than it saves.
-        if: always() && steps.cmd.outputs.value != 'probe'
+        if: always() && contains(fromJSON('["plan","apply"]'), steps.cmd.outputs.value)
         run: |
           python - <<'PY'
           import json, pathlib, sys
