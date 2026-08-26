@@ -226,8 +226,10 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("## Drafts left alone")
         lines.append("")
         lines.append(
-            "These were not overwritten because they differ from what this tool "
-            "last wrote — someone has edited them. Reconcile by hand."
+            "Left as they are, each for the reason given. A draft that "
+            "differs from what this tool last wrote has been edited by "
+            "somebody and needs reconciling by hand; the other reasons do "
+            "not mean that."
         )
         lines.append("")
         for entry in result.drafts_left_alone:

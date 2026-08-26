@@ -750,9 +750,12 @@ class Pipeline:
 
             existing = matching[0] if matching else None
 
+            written = fingerprint(lines)
+
             plan = decide(
                 existing=existing,
                 reference=reference,
+                desired_fingerprint=written,
                 # The purchase order's own memo first, the local file only as
                 # a fallback for drafts written before the memo carried it.
                 # The record travels with its own history; the file does not
@@ -816,7 +819,6 @@ class Pipeline:
                 # The lines are a separate write. A purchase created without
                 # them is a real, visible, empty purchase order — so if this
                 # fails, say which one to go and delete.
-                written = fingerprint(lines)
                 self._write_order_lines(
                     purchase_id=purchase_id,
                     reference=reference,

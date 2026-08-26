@@ -176,3 +176,52 @@ def test_a_hand_edited_draft_is_still_left_alone():
 
     assert plan.decision == DraftDecision.LEAVE_ALONE
     assert "edited" in plan.reason
+
+
+def test_a_draft_that_already_matches_is_adopted():
+    """Without this, a draft with no fingerprint is stranded for ever.
+
+    "Cannot rule out a human edit" is the right caution in general, but not
+    when the draft already says exactly what this run would write: updating
+    it changes nothing, so there is no edit to destroy. Adopting it stamps
+    the fingerprint on and lets the draft rejoin the normal cycle instead of
+    being left alone every run until somebody deletes it by hand.
+    """
+    parsed = schema.parse_purchase(
+        purchase_record(order_status="DRAFT", marker=REFERENCE)
+    )
+    assert parsed.fingerprint is None
+
+    plan = decide(
+        existing=parsed,
+        reference=REFERENCE,
+        stored_fingerprint=None,
+        desired_fingerprint=fingerprint_purchase(parsed),
+    )
+
+    assert plan.decision == DraftDecision.UPDATE
+    assert "changes nothing" in plan.reason
+
+
+def test_a_draft_that_differs_is_still_not_adopted():
+    """The caution has to survive the convenience.
+
+    Different contents and no fingerprint is exactly the case where an edit
+    cannot be ruled out, and overwriting it would discard somebody's work.
+    """
+    parsed = schema.parse_purchase(
+        purchase_record(order_status="DRAFT", marker=REFERENCE, quantity=2)
+    )
+    other = schema.parse_purchase(
+        purchase_record(order_status="DRAFT", marker=REFERENCE, quantity=99)
+    )
+
+    plan = decide(
+        existing=parsed,
+        reference=REFERENCE,
+        stored_fingerprint=None,
+        desired_fingerprint=fingerprint_purchase(other),
+    )
+
+    assert plan.decision == DraftDecision.LEAVE_ALONE
+    assert "cannot be ruled out" in plan.reason
