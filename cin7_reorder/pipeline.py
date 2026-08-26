@@ -676,14 +676,17 @@ class Pipeline:
         reference: str,
         lines: list[dict],
         fingerprint: str,
-        updating: bool,
     ) -> None:
-        """Put the lines on a purchase, by POST or PUT as needed.
+        """Put the lines on a purchase.
 
-        Which verb Cin7 wants for an existing order is not documented and
-        differs between accounts, so both are tried. Getting this wrong is
-        cheap — a 400 — while not trying is expensive: a draft that never
-        picks up its new quantities, or worse, a second one alongside it.
+        POST both creates and updates. Confirmed live: PUT answers 405, "the
+        requested resource does not support http method 'PUT'" — an
+        endpoint-level refusal, not a per-record one, so PUT will not start
+        working on some other purchase order.
+
+        It is still tried as a fallback, because a wrong guess costs one
+        rejected call while not trying costs a draft that never picks up its
+        new quantities — or a second purchase order raised alongside it.
         """
         payload = schema.build_order_payload(
             purchase_id=purchase_id,
@@ -693,11 +696,7 @@ class Pipeline:
             extra=self.config.purchase.order_fields,
         )
 
-        first, second = (
-            (self.client.put, self.client.post)
-            if updating
-            else (self.client.post, self.client.put)
-        )
+        first, second = self.client.post, self.client.put
 
         try:
             first(schema.ENDPOINT_PURCHASE_ORDER, payload)
@@ -824,7 +823,6 @@ class Pipeline:
                     reference=reference,
                     lines=order_lines,
                     fingerprint=written,
-                    updating=updating,
                 )
 
                 store.set(purchase_id, written)

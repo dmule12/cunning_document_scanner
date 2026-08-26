@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 234 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 235 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -27,7 +27,7 @@ A first `probe` run has settled some of this. Current state:
 | Creating a draft purchase order | ✅ Confirmed live — header, then lines to `purchase/order` |
 | The suggestions themselves | ✅ One run reviewed and ordered by hand from |
 | Recognising its own standing draft | ✅ Fixed — read `Order.Status`, not the overall status |
-| Whether a standing draft can be **updated** | Still untested — needs a draft to survive a run |
+| Updating a standing draft | ✅ Confirmed live — `POST purchase/order`; `PUT` answers 405 |
 | Behaviour across a supplier lead time | Untested — needs partial receipts against real inbound |
 
 `probe` is still the first command to run.
@@ -422,20 +422,6 @@ A marker with no fingerprint is still recognised as ours. Drafts written by
 earlier versions have none, and reading them as somebody else's work would
 strand them permanently.
 
-### Draft updates are still unproven
-
-Creating a draft is confirmed working. **Updating one is not**, and it cannot be tested
-deliberately: it needs a draft that survives from one run to the next, and the first one this
-tool raised was reviewed, authorised and emailed — which is the intended outcome, and the
-reason the path went unexercised.
-
-Both verbs are tried against `purchase/order`, so it may simply work. Until a draft actually
-sits unauthorised across two runs, nobody knows. Watch for `Drafts updated` in the report the
-first time that happens.
-
-If it turns out drafts can't be updated, the fallback is delete-and-recreate — note that
-changes the PO number every run, and **voiding in Cin7 is permanent.**
-
 ### A purchase is a header plus sub-resources
 
 `POST /purchase` creates the header. Order lines go to **`POST /purchase/order`** with a
@@ -465,7 +451,7 @@ takes no lines at all rather than taking them and ignoring them.
 .venv/bin/python -m pytest
 ```
 
-234 tests, offline, well under a second. The ones that matter most:
+235 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
