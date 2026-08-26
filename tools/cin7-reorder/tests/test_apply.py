@@ -180,11 +180,21 @@ def test_a_failed_line_write_is_not_reported_as_success(tmp_path):
     assert any("Failed to write draft" in w for w in result.warnings)
 
 
-def test_both_verbs_are_tried_for_the_order(tmp_path):
-    """Which verb Cin7 wants is undocumented and varies by account.
+def test_post_is_tried_first_and_put_is_only_a_fallback(tmp_path):
+    """Confirmed live: PUT answers 405 at the endpoint, not per record.
 
-    A 400 costs one call; not trying costs a draft that never updates.
+    POST both creates and updates, so trying PUT first wasted a rejected call
+    on every update. It stays as a fallback because a wrong guess costs one
+    call while not trying costs a draft that never picks up its quantities.
     """
+    handler, sent = build()
+    result = run(tmp_path, handler)
+
+    assert [verb for verb, _body in writes(sent, "purchase/order")] == ["POST"]
+    assert result.drafts_created, result.warnings
+
+
+def test_put_is_still_tried_when_post_is_refused(tmp_path):
     handler, sent = build(order_verb_fails="POST")
     result = run(tmp_path, handler)
 

@@ -13,7 +13,7 @@ A first `probe` run has settled some of this. Current state:
 
 | | Status |
 | --- | --- |
-| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 234 passing tests, no network needed |
+| The arithmetic — shortfalls, pack conversion, inbound reconstruction, rounding | Tested, 235 passing tests, no network needed |
 | The wiring — pipeline stages, supplier filtering, safety caps | Tested against a mock Cin7 |
 | Authentication | ✅ Confirmed live |
 | Per-line received quantities on `GET /purchase` | ✅ Confirmed live — partial receipts net off correctly |
@@ -26,7 +26,8 @@ A first `probe` run has settled some of this. Current state:
 | Inbound reconstruction | ✅ Working on live data — 4 duplicate orders prevented on the first clean run |
 | Creating a draft purchase order | ✅ Confirmed live — header, then lines to `purchase/order` |
 | The suggestions themselves | ✅ One run reviewed and ordered by hand from |
-| Whether a standing draft can be **updated** | Still untested — the first draft was authorised before a second run saw it |
+| Recognising its own standing draft | ✅ Fixed — read `Order.Status`, not the overall status |
+| Updating a standing draft | ✅ Confirmed live — `POST purchase/order`; `PUT` answers 405 |
 | Behaviour across a supplier lead time | Untested — needs partial receipts against real inbound |
 
 `probe` is still the first command to run.
@@ -235,10 +236,12 @@ assumed away.
 Needs Python 3.10 or newer.
 
 ```bash
-cd tools/cin7-reorder
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
+
+On Windows the interpreter is at `.venv\Scripts\python` rather than
+`.venv/bin/python`; substitute throughout.
 
 ### Credentials
 
@@ -304,6 +307,44 @@ in Cin7's UI to check against.
 
 Compare its suggestions against what you would have ordered by hand.
 
+### On a schedule
+
+`.github/workflows/reorder.yml` runs **`apply`** every Tuesday and Friday at
+08:00 Perth, creating draft purchase orders and posting the report to the run
+summary page. `plan` and `probe` are available from the dispatch menu for a dry
+run.
+
+It needs `CIN7_ACCOUNT_ID` and `CIN7_APP_KEY` as repository secrets, and only
+fires from the default branch — a cron on any other branch is inert with
+nothing to say so.
+
+There is no state to carry between runs. What the tool last wrote to a draft
+is on the draft, in its memo — see below — so a scheduled run, a re-run and a
+laptop all read the same truth, and there is no cache to evict, expire or fail
+to save.
+
+**`dump` runs from the dispatch menu too**, with its arguments in the
+`dump_args` field — `--purchase <guid>`, `--purchases`, `--sku ABC`. The point
+is that investigating does not require the Cin7 keys on anyone's laptop: the
+runner already has them as secrets, and the output lands on the run summary
+page.
+
+Arguments reach the shell through the environment and are restricted to a
+plain character set, because an expression pasted straight into a `run:` block
+lets anyone who can dispatch the workflow execute arbitrary commands on the
+runner.
+
+Dump output includes whole records — supplier names, prices, sometimes
+addresses. The run summary is visible to anyone with access to the repository,
+which is a reason to keep it private.
+
+**The job goes red when something needs a person**, because nobody reads a
+green scheduled run and GitHub only emails on failure. Two conditions qualify:
+the run aborted, or a draft write failed and left an empty purchase order in
+Cin7 for somebody to delete. Ordinary warnings do not fail it — a job that goes
+red twice a week for something nobody must act on is a job people stop looking
+at.
+
 ### 3. `apply` — create and update drafts
 
 ```bash
@@ -347,19 +388,39 @@ automatically.
 
 ## Known unknowns
 
-### Draft updates are still unproven
+### A draft reports itself as "ORDERING"
 
-Creating a draft is confirmed working. **Updating one is not**, and it cannot be tested
-deliberately: it needs a draft that survives from one run to the next, and the first one this
-tool raised was reviewed, authorised and emailed — which is the intended outcome, and the
-reason the path went unexercised.
+Cin7 puts no `OrderStatus` on a purchase *detail* record, and reports a purchase
+whose order stage is still a draft as **`Status: "ORDERING"`** at the top level.
+That parses as authorised — reasonably, since it means an order is in progress.
 
-Both verbs are tried against `purchase/order`, so it may simply work. Until a draft actually
-sits unauthorised across two runs, nobody knows. Watch for `Drafts updated` in the report the
-first time that happens.
+Draft-ness comes from **`Order.Status`** instead. Reading the overall status was
+wrong in two directions at once:
 
-If it turns out drafts can't be updated, the fallback is delete-and-recreate — note that
-changes the PO number every run, and **voiding in Cin7 is permanent.**
+- the tool never recognised its own standing draft, so it raised a **fresh
+  purchase order every run**; and
+- other people's abandoned drafts counted as **stock on its way**, which
+  suppresses reorders for goods that are never coming. One from 2020 was
+  contributing 410 base units.
+
+### The fingerprint lives on the purchase order
+
+What the tool last wrote to a draft is recorded in the order memo, next to the
+reference:
+
+```
+AUTO-REORDER-2026W35-WA-Warehouse-ba7067f4 fp=9c1f…
+```
+
+It used to live in a local JSON file, which did not exist on a fresh checkout,
+did not survive a CI cache eviction — or a cache that simply failed to save,
+which is what happened — and differed between a laptop and a scheduled run.
+Keeping it on the record means every runner reads the same truth, and the
+history travels with the thing it describes.
+
+A marker with no fingerprint is still recognised as ours. Drafts written by
+earlier versions have none, and reading them as somebody else's work would
+strand them permanently.
 
 ### A purchase is a header plus sub-resources
 
@@ -390,7 +451,7 @@ takes no lines at all rather than taking them and ignoring them.
 .venv/bin/python -m pytest
 ```
 
-234 tests, offline, well under a second. The ones that matter most:
+235 tests, offline, well under a second. The ones that matter most:
 
 - `test_inbound.py` — partial receipts. 10 boxes ordered, 4 received: 96 sleeves are already
   in on-hand, only 144 are still inbound. Counting all 240 suppresses real reorders while
