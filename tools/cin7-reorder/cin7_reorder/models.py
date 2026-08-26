@@ -130,6 +130,32 @@ class PurchaseOrder:
     reference: Optional[str] = None
     lines: tuple[PurchaseLine, ...] = ()
     raw_status: str = ""
+    #: ``Order.Status`` — the status of the order stage specifically, which is
+    #: a different thing from the purchase's overall status.
+    order_status: str = ""
+    #: The fingerprint this tool last wrote, recovered from the order memo.
+    fingerprint: Optional[str] = None
+
+    @property
+    def is_draft(self) -> bool:
+        """Whether nobody has authorised this order yet.
+
+        Read from the **order stage**, not the overall status. Confirmed on a
+        live account: a purchase whose order is still a draft reports
+        ``Status: "ORDERING"`` at the top level, and there is no top-level
+        ``OrderStatus`` on the detail record at all. "ORDERING" parses as
+        authorised — reasonably, since it means an order is in progress — so
+        reading the overall status made every draft look authorised.
+
+        Two things went wrong because of that, in opposite directions. The
+        tool never recognised its own standing draft, so it raised a fresh
+        purchase order every run. And other people's abandoned drafts —
+        including one from 2020 — were counted as stock on its way, which
+        suppresses reorders for goods that are not coming.
+        """
+        if self.order_status:
+            return self.order_status.strip().upper() == "DRAFT"
+        return self.status is PurchaseStatus.DRAFT
 
 
 # ---------------------------------------------------------------------------
