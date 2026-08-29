@@ -1,6 +1,6 @@
 name: Cin7 reorder
 
-# Twice-weekly reorder run. Creates DRAFT purchase orders in Cin7.
+# Daily reorder run. Creates DRAFT purchase orders in Cin7.
 #
 # It never authorises one and never emails a supplier — Cin7 has no API for
 # sending a purchase order anyway. A person opens the draft, checks it, and
@@ -11,13 +11,16 @@ name: Cin7 reorder
 
 on:
   schedule:
-    # Tuesday and Friday, 08:00 Perth (AWST, UTC+8) = 00:00 UTC.
-    # Western Australia does not observe daylight saving, so this holds
-    # year-round.
+    # Every day, 08:00 Perth (AWST, UTC+8) = 00:00 UTC. Western Australia
+    # does not observe daylight saving, so this holds year-round.
+    #
+    # Daily is safe because a run that finds nothing below its minimum
+    # writes nothing, and one that finds the same shortfall as yesterday
+    # updates the standing draft rather than raising another.
     #
     # A schedule only ever fires from the repository's default branch. On any
     # other branch it is inert, with nothing to say so.
-    - cron: "0 0 * * 2,5"
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       command:
