@@ -55,6 +55,10 @@ from .reorderpoints import resolve as resolve_reorder_point
 
 log = logging.getLogger(__name__)
 
+#: How many matching products `explain` will trace before asking for a
+#: narrower fragment. A one-letter fragment matches half the catalogue.
+_MAX_EXPLAIN_MATCHES = 30
+
 
 def _is_purchase(payload: object, purchase_id: str) -> bool:
     """Whether a response really is the purchase that was asked for.
@@ -103,6 +107,11 @@ class Pipeline:
     state_path: Path
     dry_run: bool = True
 
+    #: Every supplier on the account, id -> name, filled by _load_suppliers.
+    #: Kept so `explain` can tell "this supplier is not automated" apart from
+    #: "this product points at a supplier id that does not exist".
+    _all_suppliers: dict = field(default_factory=dict, init=False, repr=False)
+
     #: Whether to try the Advanced/Service purchase endpoint before
     #: ``/purchase``. Set by whichever one last served a purchase. Purely an
     #: optimisation — both are still tried — but on an account where every
@@ -133,7 +142,7 @@ class Pipeline:
             )
             return
 
-        products, reorder_params, boms = self._load_products()
+        products, reorder_params, boms, _ = self._load_products()
         bom = self._build_bom_index(boms, products, result)
         availability = self._load_availability(result)
         purchases = self._load_purchases(result, suppliers)
@@ -192,6 +201,7 @@ class Pipeline:
             if not supplier_id:
                 continue
             name = schema.parse_supplier_name(record) or supplier_id
+            self._all_suppliers[supplier_id] = name
 
             if pin:
                 # The rollout pin overrides the attribute entirely, so the
@@ -219,11 +229,12 @@ class Pipeline:
         return opted_in
 
     def _load_products(
-        self,
+        self, capture_fragments: tuple[str, ...] = ()
     ) -> tuple[
         dict[str, Product],
         dict[str, list[ReorderParameters]],
         list[BillOfMaterials],
+        dict[str, dict],
     ]:
         """One pass over the catalogue, yielding everything it carries.
 
@@ -231,10 +242,16 @@ class Pipeline:
         own endpoint, so products, reorder points and BOMs all come from the
         same paged read. Confirmed against a live account, where every
         candidate /BillOfMaterials path returned Cin7's not-found redirect.
+
+        ``capture_fragments`` keeps the raw API record of any product whose
+        SKU or name contains one of the fragments (case-insensitively), for
+        `explain` — which reports what the API actually returned, not just
+        what was parsed out of it.
         """
         products: dict[str, Product] = {}
         params: dict[str, list[ReorderParameters]] = {}
         boms: list[BillOfMaterials] = []
+        captured: dict[str, dict] = {}
 
         # The include flags matter enormously: without them Cin7 returns every
         # nested collection as an empty list, which reads as "no product has a
@@ -247,6 +264,11 @@ class Pipeline:
                 continue
             products[product.id] = product
 
+            if capture_fragments:
+                haystack = f"{product.sku} {product.name}".lower()
+                if any(f in haystack for f in capture_fragments):
+                    captured[product.id] = dict(record)
+
             parsed = schema.parse_reorder_parameters(record)
             if parsed:
                 params[product.id] = parsed
@@ -256,7 +278,7 @@ class Pipeline:
                 if bom is not None and bom.components:
                     boms.append(bom)
 
-        return products, params, boms
+        return products, params, boms, captured
 
     def _build_bom_index(
         self,
@@ -777,6 +799,271 @@ class Pipeline:
                     ),
                 )
             )
+
+    # -- explain -----------------------------------------------------------
+
+    def explain(self, fragments: list[str]) -> str:
+        """Trace named products through the run: why is each (not) ordered?
+
+        Exists because every silent skip so far was discovered the same way —
+        a person noticing an absence on a draft and asking "why is X
+        missing?". The report shows categories; this answers for one product
+        at a time, from the raw facts the decision was made from, including
+        the suppliers the API actually returns for the product (which can
+        differ from what the Cin7 screen shows).
+
+        Read-only, and independent of dry_run: it never writes.
+        """
+        wanted = tuple(f.strip().lower() for f in fragments if f and f.strip())
+        if not wanted:
+            return "Nothing to explain — give a SKU or product-name fragment."
+
+        result = RunResult()
+        opted_in = self._load_suppliers(result)
+        products, reorder_params, boms, raw_records = self._load_products(
+            capture_fragments=wanted
+        )
+        bom = BomIndex.build(boms)
+        availability = self._load_availability(result)
+        purchases = self._load_purchases(result, opted_in)
+        our_drafts = {p.id: p for p in purchases if p.is_draft and is_ours(p)}
+        inbound = reconstruct(
+            purchases, bom, exclude_purchase_ids=set(our_drafts)
+        )
+        locations = sorted(
+            {a.location for a in availability.values() if a.location}
+        ) or [""]
+
+        matches = sorted(
+            (
+                p
+                for p in products.values()
+                if any(f in f"{p.sku} {p.name}".lower() for f in wanted)
+            ),
+            key=lambda p: p.sku,
+        )
+
+        out: list[str] = []
+        if not matches:
+            return (
+                "No product in the catalogue matches "
+                + ", ".join(repr(f) for f in fragments)
+                + ". Matching is a case-insensitive substring of the SKU or "
+                "the name, so a miss means the product is named differently "
+                "in Cin7 than expected — search the product list there for "
+                "what it is actually called."
+            )
+
+        shown = matches[:_MAX_EXPLAIN_MATCHES]
+        if len(matches) > len(shown):
+            out.append(
+                f"{len(matches)} products match; showing the first "
+                f"{len(shown)}. Use a narrower fragment for the rest."
+            )
+            out.append("")
+
+        for product in shown:
+            out.extend(
+                self._explain_product(
+                    product=product,
+                    raw=raw_records.get(product.id, {}),
+                    opted_in=opted_in,
+                    reorder_params=reorder_params,
+                    bom=bom,
+                    availability=availability,
+                    inbound=inbound,
+                    locations=locations,
+                    products=products,
+                )
+            )
+            out.append("")
+
+        for warning in result.warnings:
+            out.append(f"NOTE: {warning}")
+
+        return "\n".join(out).rstrip() + "\n"
+
+    def _explain_product(
+        self,
+        *,
+        product: Product,
+        raw: dict,
+        opted_in: dict[str, str],
+        reorder_params: dict[str, list[ReorderParameters]],
+        bom: BomIndex,
+        availability: dict[tuple[str, str], Availability],
+        inbound,
+        locations: list[str],
+        products: dict[str, Product],
+    ) -> list[str]:
+        out = [
+            f"=== {product.sku} — {product.name or '(no name)'}",
+            f"    product id {product.id}",
+        ]
+
+        listed = schema.parse_product_suppliers(raw)
+        if listed:
+            out.append("    Suppliers the API returns for this product:")
+            for sid, sname, is_default in listed:
+                tags = []
+                if is_default:
+                    tags.append("marked default")
+                if sid and sid in opted_in:
+                    tags.append("automated")
+                suffix = f"  [{', '.join(tags)}]" if tags else ""
+                out.append(
+                    f"      - {sname or '(unnamed)'} ({sid or 'no id'}){suffix}"
+                )
+        else:
+            out.append(
+                "    Suppliers the API returns for this product: NONE. "
+                "Whatever the Cin7 screen shows, the API returns no supplier "
+                "link — open the product's Suppliers tab in Cin7, add or "
+                "re-save the supplier, then run explain again to confirm it "
+                "took."
+            )
+
+        followed = product.supplier_id
+        if not followed:
+            out.append(
+                "    -> Invisible to the run: with no supplier there is "
+                "nothing to raise a purchase order against."
+            )
+        else:
+            name = (
+                product.supplier_name
+                or self._all_suppliers.get(followed)
+                or followed
+            )
+            if followed in opted_in:
+                out.append(f"    The run orders this from: {name} — automated.")
+            elif followed in self._all_suppliers:
+                pin = ", ".join(self.config.suppliers.pin) or "(empty)"
+                out.append(
+                    f"    The run attributes this to: "
+                    f"{self._all_suppliers[followed]} — NOT automated (the "
+                    f"pin is: {pin}). Add that supplier to `suppliers.pin`, "
+                    "or — if you buy this from someone already automated — "
+                    "make that supplier the default on the product's "
+                    "Suppliers tab in Cin7."
+                )
+            else:
+                out.append(
+                    f"    The product points at supplier id {followed} "
+                    f"('{name}'), which does not exist in the account's "
+                    "supplier list. The link is stale — the supplier was "
+                    "deprecated or merged. Re-pick the supplier on the "
+                    "product's Suppliers tab in Cin7."
+                )
+
+        if bom.is_pack(product.id):
+            parts = []
+            for component_id, qty in bom.components_in_base(product.id, 1.0):
+                component = products.get(component_id)
+                parts.append(
+                    f"{qty:g} × {component.sku if component else component_id}"
+                )
+            out.append(
+                "    This is a PACK SKU — its bill of materials says one "
+                f"contains {', '.join(parts)}. Packs are never evaluated "
+                "against their own stock level (they disassemble on "
+                "receipt); the component is what gets checked, and this "
+                "pack is what lands on the order when the component "
+                "resolves to it. Run explain on the component to see that "
+                "side."
+            )
+            return out
+
+        conflict = bom.conflict_for(product.id)
+        if conflict is not None:
+            out.append(
+                "    BOM CONFLICT: this product is a component of more than "
+                "one pack ("
+                + ", ".join(conflict.pack_skus or conflict.pack_product_ids)
+                + "), so there is no way to tell which pack to order. It is "
+                "skipped everywhere until one pack per component is chosen "
+                "in Cin7."
+            )
+
+        link = bom.resolve(product.id)
+        if link is not None:
+            out.append(
+                f"    Ordered as pack {link.display_sku} "
+                f"({link.units_per_pack:g} per pack)."
+            )
+
+        for location in locations:
+            if not self.config.includes_location(location):
+                out.append(
+                    f"    {location}: excluded by the location filter in "
+                    "config.yaml."
+                )
+                continue
+
+            point = resolve_reorder_point(
+                reorder_params.get(product.id, []),
+                supplier_id=product.supplier_id,
+                location=location,
+            )
+            stock = availability_for(availability, product.id, location)
+            incoming = inbound.get(product.id, location)
+            position = stock.on_hand + incoming - stock.allocated
+            facts = (
+                f"on hand {stock.on_hand:g}, allocated {stock.allocated:g}, "
+                f"inbound {incoming:g} -> position {position:g}"
+            )
+
+            if point is None:
+                out.append(
+                    f"    {location}: no usable MinimumBeforeReorder (unset "
+                    f"or 0) at product or location level, so it never "
+                    f"triggers. {facts}."
+                )
+                continue
+
+            quantity = (
+                f"{point.reorder_quantity:g}"
+                if point.reorder_quantity is not None
+                else "UNSET"
+            )
+            detail = (
+                f"minimum {point.minimum:g} ({point.source} level), "
+                f"reorder quantity {quantity}, {facts}"
+            )
+
+            if position > point.minimum + EPSILON:
+                out.append(
+                    f"    {location}: above its minimum — nothing to order. "
+                    f"{detail}."
+                )
+            elif not point.has_orderable_quantity:
+                out.append(
+                    f"    {location}: AT OR BELOW its minimum but "
+                    f"ReorderQuantity is unset — a trigger with nothing to "
+                    f"fire. Set it in Cin7. {detail}."
+                )
+            elif (
+                product.supplier_id
+                and product.supplier_id in opted_in
+                and conflict is None
+            ):
+                out.append(
+                    f"    {location}: WOULD ORDER {quantity} base units on "
+                    f"the next run. {detail}."
+                )
+            else:
+                if conflict is not None:
+                    blocker = "the BOM conflict above"
+                elif product.supplier_id:
+                    blocker = "its supplier is not automated (see above)"
+                else:
+                    blocker = "it has no supplier"
+                out.append(
+                    f"    {location}: at or below its minimum and WOULD "
+                    f"order, but {blocker}. {detail}."
+                )
+
+        return out
 
     def _enforce_run_caps(self, result: RunResult) -> None:
         cap = self.config.safety.max_total_lines

@@ -308,6 +308,27 @@ in Cin7's UI to check against.
 
 Compare its suggestions against what you would have ordered by hand.
 
+### `explain` — why is this product (not) on the draft?
+
+```bash
+.venv/bin/python -m cin7_reorder explain chai granola napkin
+```
+
+Read-only. For every product whose SKU or name contains one of the fragments,
+prints the suppliers the API actually returns for it (which can differ from
+what the Cin7 screen shows), whether the one the run follows is automated, its
+reorder point, its stock position, and the exact branch where it fell out of
+the run.
+
+This is the tool to reach for when a product you expected is missing from a
+draft. The report can only show categories, and its skip table truncates on a
+real account; `explain` answers for the specific product, including the
+skips the report has no room for — a pack SKU evaluated via its component, a
+stale supplier link pointing at a merged supplier record, a location filter.
+
+It runs from the workflow dispatch menu too: choose `explain` and put the
+fragments in the `explain_args` field.
+
 ### On a schedule
 
 `.github/workflows/reorder.yml` runs **`apply`** every Tuesday and Friday at

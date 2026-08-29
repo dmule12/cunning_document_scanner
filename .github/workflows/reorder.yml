@@ -25,11 +25,16 @@ on:
         required: true
         default: plan
         type: choice
-        options: [probe, plan, apply, dump]
+        options: [probe, plan, apply, dump, explain]
       dump_args:
         description: "Arguments for dump, e.g. --purchase <guid>, --purchases, --sku ABC"
         required: false
         default: "--purchases"
+        type: string
+      explain_args:
+        description: "For explain: SKU or product-name fragments, space separated, e.g. chai granola napkin"
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -102,6 +107,32 @@ jobs:
           esac
           set -o pipefail
           python -m cin7_reorder dump $DUMP_ARGS | tee report.md
+
+      - name: Explain
+        # "Why is X missing from the draft?" — traces named products through
+        # the run and prints where each fell out. Read-only, and the same
+        # argument hygiene as dump: values reach the shell via the
+        # environment, never pasted in by the expression.
+        if: steps.cmd.outputs.value == 'explain'
+        env:
+          CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
+          CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
+          EXPLAIN_ARGS: ${{ inputs.explain_args }}
+        run: |
+          case "$EXPLAIN_ARGS" in
+            "")
+              echo "explain needs explain_args: SKU or name fragments, e.g. chai granola napkin"
+              exit 1
+              ;;
+            *[!A-Za-z0-9\ ._/=-]*)
+              echo "explain_args may only contain letters, digits, spaces and . _ - / ="
+              exit 1
+              ;;
+          esac
+          set -o pipefail
+          # Unquoted on purpose: each space-separated fragment is its own
+          # argument. The character guard above is what makes that safe.
+          python -m cin7_reorder explain $EXPLAIN_ARGS | tee report.md
 
       - name: Plan
         if: steps.cmd.outputs.value == 'plan'

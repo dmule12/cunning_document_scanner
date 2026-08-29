@@ -26,7 +26,7 @@ from typing import Optional
 import typer
 
 from . import schema
-from .client import Cin7Client
+from .client import Cin7Client, Cin7Error
 from .config import Config, ConfigError, Credentials
 from .dump import (
     compare_list_and_detail,
@@ -268,6 +268,44 @@ def dump(
 
         typer.echo(render(record, notes, keys_only=keys_only))
         typer.echo(f"API calls used: {client.call_count}")
+
+
+@app.command()
+def explain(
+    fragments: list[str] = typer.Argument(
+        ...,
+        help="SKU or product-name fragments, e.g.: chai granola napkin",
+    ),
+    config_path: Optional[Path] = typer.Option(
+        None, "--config", help="Path to config.yaml."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Why is this product (not) on the draft? Trace it through the run.
+
+    Read-only. For every product whose SKU or name contains one of the
+    fragments, prints the suppliers the API actually returns for it, whether
+    the one the run follows is automated, its reorder point, its stock
+    position, and the exact branch where it fell out of the run — including
+    the branches the report has no room to show.
+    """
+    _setup_logging(verbose)
+    credentials, config = _load(config_path)
+
+    with Cin7Client(credentials, config.api, read_only=True) as client:
+        pipeline = Pipeline(
+            client=client,
+            config=config,
+            state_path=DEFAULT_STATE,
+            dry_run=True,
+        )
+        try:
+            typer.echo(pipeline.explain(fragments))
+        except Cin7Error as exc:
+            typer.secho(f"API error: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        finally:
+            typer.echo(f"API calls used: {client.call_count}")
 
 
 @app.command()

@@ -47,6 +47,17 @@ _MAX_SUPPLIER_NAMES = 25
 #: carries every row.
 _MAX_SKIP_ROWS = 40
 
+#: Display order for the skip table: a product below its minimum whose
+#: supplier is not automated is the row somebody is actively looking for; a
+#: product with no reorder point set is background noise by comparison.
+_SKIP_PRIORITY = {
+    SkipReason.SUPPLIER_NOT_OPTED_IN: 0,
+    SkipReason.NO_REORDER_QUANTITY: 1,
+    SkipReason.MULTIPLE_BOM_PARENTS: 2,
+    SkipReason.NO_SUPPLIER: 3,
+    SkipReason.NO_REORDER_PARAMETERS: 4,
+}
+
 
 def render_markdown(result: RunResult, *, dry_run: bool) -> str:
     lines: list[str] = []
@@ -277,7 +288,15 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
         lines.append("| SKU | Location | Reason | Detail |")
         lines.append("| --- | --- | --- | --- |")
-        shown = sorted(actionable, key=lambda s: (s.reason.value, s.base_sku))
+        # Rarest and most actionable reasons first, NOT alphabetical by
+        # reason value. Sorting alphabetically put supplier_not_opted_in
+        # last, behind a hundred supplier-less gift cards and flyers — so the
+        # very rows added to answer "why is X missing from the order?" fell
+        # into the truncated overflow and the question got asked again.
+        shown = sorted(
+            actionable,
+            key=lambda s: (_SKIP_PRIORITY.get(s.reason, 9), s.base_sku),
+        )
         for skip in shown[:_MAX_SKIP_ROWS]:
             lines.append(
                 f"| {skip.base_sku} "

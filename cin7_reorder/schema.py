@@ -271,6 +271,32 @@ def _parse_default_supplier(
     )
 
 
+def parse_product_suppliers(
+    payload: Mapping[str, Any],
+) -> list[tuple[Optional[str], Optional[str], bool]]:
+    """Every supplier a product record lists, as ``(id, name, is_default)``.
+
+    Diagnostics only — the run itself follows the single supplier from
+    :func:`_parse_default_supplier`. But when a product is missing from an
+    order, "which suppliers does the API actually return for it" is the
+    question, and the answer can differ from what the Cin7 screen shows.
+    """
+    suppliers = get_first(
+        payload, "Suppliers", "ProductSuppliers", "SupplierList", default=[]
+    )
+    if not isinstance(suppliers, list):
+        return []
+    return [
+        (
+            as_str(get_first(raw, "SupplierID", "ID", "Id")),
+            as_str(get_first(raw, "SupplierName", "Name", "Supplier")),
+            get_first(raw, "IsDefault", "Default", "IsPreferred") is True,
+        )
+        for raw in suppliers
+        if isinstance(raw, Mapping)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Availability
 # ---------------------------------------------------------------------------
