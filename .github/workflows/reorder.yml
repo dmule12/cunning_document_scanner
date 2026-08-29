@@ -73,7 +73,9 @@ jobs:
           CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
           CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
         run: |
-          # probe prints to stdout; it takes no report flags.
+          # probe prints to stdout; it takes no report flags. pipefail so
+          # tee cannot replace probe's exit code with its own 0.
+          set -o pipefail
           python -m cin7_reorder probe | tee report.md
 
       - name: Dump
@@ -98,6 +100,7 @@ jobs:
               exit 1
               ;;
           esac
+          set -o pipefail
           python -m cin7_reorder dump $DUMP_ARGS | tee report.md
 
       - name: Plan
@@ -151,10 +154,20 @@ jobs:
           if data.get("aborted"):
               problems.append(f"Run aborted: {data['aborted']}")
 
+          # Every warning text the pipeline can emit about a purchase order
+          # that exists in Cin7 in a state a person must look at. The first
+          # live empty-PO incident matched NONE of the old patterns, so the
+          # job stayed green while promising to go red — a check that misses
+          # its one real case is worse than no check.
+          NEEDS_PERSON = (
+              "Failed to write draft",
+              "standing drafts",
+              "returned no ID",
+              "empty purchase order",
+              "empty draft",
+          )
           for warning in data.get("warnings", []):
-              if "Failed to write draft" in warning:
-                  problems.append(warning)
-              if "standing drafts" in warning:
+              if any(marker in warning for marker in NEEDS_PERSON):
                   problems.append(warning)
 
           created = data.get("drafts_created") or []

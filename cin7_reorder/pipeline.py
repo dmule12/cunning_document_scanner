@@ -41,9 +41,9 @@ from .inbound import reconstruct
 from .models import (
     Availability,
     BillOfMaterials,
+    LineFlag,
     Product,
     PurchaseOrder,
-    PurchaseStatus,
     ReorderParameters,
     RunResult,
     SkipReason,
@@ -417,8 +417,27 @@ class Pipeline:
             if detail is None:
                 continue
             parsed = schema.parse_purchase(detail)
-            if parsed is not None:
-                purchases.append(parsed)
+            if parsed is None:
+                # Fetched but unparseable is the same hole as unfetchable:
+                # whatever this order has coming is missing from inbound. The
+                # old code dropped it silently — in apply mode, which promises
+                # to stop rather than write from an incomplete view.
+                message = (
+                    f"Open purchase {entry.id} was fetched but could not be "
+                    "parsed (no ID echoed back). Anything it has on order is "
+                    "missing from the inbound figures."
+                )
+                if self.dry_run:
+                    result.warnings.append(
+                        "INBOUND STOCK MAY BE UNDERSTATED. " + message
+                    )
+                    continue
+                raise Cin7Error(
+                    message
+                    + " Refusing to create purchase orders from an incomplete "
+                    "view of what is already on its way."
+                )
+            purchases.append(parsed)
 
         self._report_purchase_coverage(
             result,
@@ -603,6 +622,24 @@ class Pipeline:
                 continue
 
             if not product.supplier_id:
+                # Only reportable when somebody set a reorder point: a minimum
+                # with no supplier is a product that can never be auto-ordered,
+                # and nothing else would ever say so. Products with neither
+                # stay silent — reporting the whole catalogue helps no one.
+                if reorder_params.get(product.id):
+                    result.skipped.append(
+                        SkippedProduct(
+                            base_product_id=product.id,
+                            base_sku=product.sku,
+                            location="",
+                            reason=SkipReason.NO_SUPPLIER,
+                            detail=(
+                                f"{product.sku} has a reorder point but no "
+                                "supplier on the product, so it can never be "
+                                "ordered automatically."
+                            ),
+                        )
+                    )
                 continue
 
             if product.supplier_id not in suppliers:
@@ -698,10 +735,15 @@ class Pipeline:
 
         first, second = self.client.post, self.client.put
 
+        # Python unbinds `except ... as name` when the block exits, so the
+        # first error is captured into an outer name to survive to the
+        # re-raise below.
+        first_error: Optional[Cin7Error] = None
         try:
             first(schema.ENDPOINT_PURCHASE_ORDER, payload)
             return
         except Cin7Error as exc:
+            first_error = exc
             log.info(
                 "First verb rejected for %s on %s (%s); trying the other",
                 schema.ENDPOINT_PURCHASE_ORDER,
@@ -709,7 +751,13 @@ class Pipeline:
                 exc,
             )
 
-        second(schema.ENDPOINT_PURCHASE_ORDER, payload)
+        try:
+            second(schema.ENDPOINT_PURCHASE_ORDER, payload)
+        except Cin7Error:
+            # The fallback verb answers a bare 405 here, which would bury the
+            # error that actually names the problem — a 400 saying which
+            # required attribute is missing. Report the informative one.
+            raise first_error
 
     def _write_drafts(
         self, result: RunResult, our_drafts: dict[str, PurchaseOrder]
@@ -749,7 +797,25 @@ class Pipeline:
 
             existing = matching[0] if matching else None
 
-            written = fingerprint(lines)
+            # Capped lines are reported, never ordered — config.yaml and the
+            # README both promise exactly that, and until now the promise was
+            # false: the flag made it to the report while the full quantity
+            # went onto the draft.
+            writable = [
+                line for line in lines if LineFlag.CAP_EXCEEDED not in line.flags
+            ]
+            held_back = len(lines) - len(writable)
+            if held_back:
+                result.warnings.append(
+                    f"{held_back} line(s) for {reference} exceed a safety cap "
+                    "and were NOT put on the draft. They are in the report "
+                    "with their computed quantities; a cap trip usually means "
+                    "a wrong BOM ratio or a stale reorder point."
+                )
+            if not writable:
+                continue
+
+            written = fingerprint(writable)
 
             plan = decide(
                 existing=existing,
@@ -772,6 +838,7 @@ class Pipeline:
                 )
                 continue
 
+            lines = writable
             payload = schema.build_purchase_payload(
                 supplier_id=supplier_id,
                 location=location,
@@ -791,6 +858,8 @@ class Pipeline:
                 for line in lines
             ]
 
+            purchase_id: Optional[str] = None
+            updating = False
             try:
                 if plan.decision == DraftDecision.UPDATE and plan.purchase_id:
                     purchase_id = plan.purchase_id
@@ -805,7 +874,6 @@ class Pipeline:
                             "TaskID",
                         )
                     )
-                    updating = False
                     if not purchase_id:
                         # Without the id the lines have nowhere to go, and a
                         # header with no lines is a purchase order for nothing.
@@ -832,8 +900,33 @@ class Pipeline:
                 else:
                     result.drafts_created.append(plan.reference)
             except Cin7Error as exc:
-                result.warnings.append(
-                    f"Failed to write draft {reference}: {exc}"
+                if purchase_id and not updating:
+                    # The header exists but the lines never landed: there is
+                    # a real, visible, EMPTY purchase order in Cin7 right now.
+                    # Say so, name it, and say what happens next — the next
+                    # run recognises an empty draft of ours and fills it in.
+                    result.warnings.append(
+                        f"Failed to write draft {reference}: {exc}. The "
+                        f"header was created, so an empty purchase order "
+                        f"({purchase_id}) now exists in Cin7. The next run "
+                        "will fill it in; delete it by hand only if you want "
+                        "it gone sooner."
+                    )
+                else:
+                    result.warnings.append(
+                        f"Failed to write draft {reference}: {exc}"
+                    )
+
+        # 3. Standing drafts whose demand has cleared. _write_drafts only
+        # visits groups that have lines THIS run, so without this a draft
+        # whose products recovered would sit in Cin7 indefinitely, stale,
+        # waiting for someone to authorise last month's quantities.
+        for draft in our_drafts.values():
+            if (draft.supplier_id, draft.location) not in grouped:
+                result.drafts_left_alone.append(
+                    f"{draft.reference or draft.id} — nothing is below its "
+                    "minimum for this supplier and location any more; the "
+                    "draft is stale. Delete it in Cin7."
                 )
 
         store.save()

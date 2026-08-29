@@ -58,10 +58,18 @@ class BomIndex:
         links: dict[str, PackLink],
         conflicts: dict[str, Conflict],
         pack_product_ids: frozenset[str],
+        pack_components: dict[str, tuple] | None = None,
     ) -> None:
         self._links = links
         self._conflicts = conflicts
         self._pack_product_ids = pack_product_ids
+        #: parent -> its full component list, straight off the BOMs. Kept
+        #: separately from _links because the two answer different questions:
+        #: _links answers "which pack do I ORDER for this component" and
+        #: excludes conflicted components, while this answers "what does an
+        #: ordered pack CONTAIN" — where a conflict is irrelevant and every
+        #: component counts.
+        self._pack_components = pack_components or {}
 
     # -- construction ------------------------------------------------------
 
@@ -110,7 +118,18 @@ class BomIndex:
                 )
 
         pack_ids = frozenset(bom.parent_product_id for bom in boms)
-        return cls(links=links, conflicts=conflicts, pack_product_ids=pack_ids)
+        pack_components = {
+            bom.parent_product_id: tuple(
+                c for c in bom.components if c.quantity > 0
+            )
+            for bom in boms
+        }
+        return cls(
+            links=links,
+            conflicts=conflicts,
+            pack_product_ids=pack_ids,
+            pack_components=pack_components,
+        )
 
     # -- queries -----------------------------------------------------------
 
@@ -136,20 +155,29 @@ class BomIndex:
         """
         return product_id in self._pack_product_ids
 
-    def units_in_base(self, product_id: str, quantity: float) -> tuple[str, float]:
-        """Convert a quantity of ``product_id`` into base units.
+    def components_in_base(
+        self, product_id: str, quantity: float
+    ) -> list[tuple[str, float]]:
+        """Everything a quantity of ``product_id`` becomes, in base units.
 
-        If the product is a pack, returns its component's id and the quantity
-        multiplied by the pack ratio. Otherwise the product is already a base
-        unit and passes through unchanged.
+        This is how an inbound purchase-order line for boxes becomes numbers
+        of sleeves — plural on purpose. A pack can contain several different
+        components (a coffee pack holds the bag, the beans and the label),
+        and an earlier version credited the whole line to whichever component
+        happened to come first, returning zero inbound for the rest — which
+        understates inbound and re-orders goods already on their way.
 
-        This is how an inbound purchase-order line for boxes becomes a number
-        of sleeves.
+        Conflicted components are included here. A conflict decides which
+        pack to ORDER for a component, not what an ordered pack CONTAINS.
+
+        A product with no bill of materials passes through unchanged.
         """
-        for link in self._links.values():
-            if link.pack_product_id == product_id:
-                return link.base_product_id, quantity * link.units_per_pack
-        return product_id, quantity
+        components = self._pack_components.get(product_id)
+        if not components:
+            return [(product_id, quantity)]
+        return [
+            (c.component_product_id, quantity * c.quantity) for c in components
+        ]
 
     # -- diagnostics -------------------------------------------------------
 

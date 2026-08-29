@@ -222,9 +222,16 @@ class Config:
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":
+        explicit = path is not None
         if path is None:
             path = Path(__file__).resolve().parent.parent / "config.yaml"
         if not path.exists():
+            if explicit:
+                # Somebody typed --config and pointed at nothing. Silently
+                # running on all-defaults instead would drop the supplier pin
+                # and the location excludes — the two settings that keep this
+                # from ordering for the whole account.
+                raise ConfigError(f"--config {path} does not exist.")
             return cls()
 
         with path.open("r", encoding="utf-8") as handle:

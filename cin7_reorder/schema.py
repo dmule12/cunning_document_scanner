@@ -80,7 +80,6 @@ AVAILABILITY_ENDPOINT_CANDIDATES = (
     "stockOnHand",
     "stockLevels",
 )
-ENDPOINT_BILL_OF_MATERIALS = "BillOfMaterials"
 ENDPOINT_SUPPLIER = "supplier"
 ENDPOINT_LOCATION = "ref/location"
 ENDPOINT_PURCHASE_LIST = "purchaseList"
@@ -96,9 +95,8 @@ ENDPOINT_PURCHASE = "purchase"
 ENDPOINT_PURCHASE_ORDER = "purchase/order"
 
 #: Cin7 has more than one kind of purchase order. ``/purchase`` answers a
-#: 400 for Advanced and Service purchases, telling you to use this instead.
-#: Both are needed: neither endpoint serves every purchase.
-ENDPOINT_ADVANCED_PURCHASE = "AdvancedPurchase"
+#: 400 for Advanced and Service purchases, telling you to use one of these
+#: instead. Both endpoints are needed: neither serves every purchase.
 ADVANCED_PURCHASE_CANDIDATES = (
     "AdvancedPurchase",
     "advancedPurchase",
@@ -661,7 +659,12 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
         )
     )
 
-    received_by_product = _sum_received_quantities(payload)
+    # Receipts are recorded per product, but a purchase can carry the same
+    # product on several lines. The pool is CONSUMED across them, not copied:
+    # handing every duplicate line the full per-product total netted the same
+    # receipt off repeatedly, understating what is still coming — which means
+    # re-ordering goods already on their way.
+    remaining_received = _sum_received_quantities(payload)
 
     lines: list[PurchaseLine] = []
     for raw in raw_lines:
@@ -677,7 +680,9 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
         # the total summed from receipt lines for this product.
         line_received = as_optional_float(get_first(raw, *RECEIVED_QUANTITY_KEYS))
         if line_received is None:
-            line_received = received_by_product.get(product_id, 0.0)
+            pool = remaining_received.get(product_id, 0.0)
+            line_received = min(ordered, pool)
+            remaining_received[product_id] = pool - line_received
 
         lines.append(
             PurchaseLine(
@@ -1048,8 +1053,3 @@ def build_purchase_line(
         }
     )
     return line
-
-
-def iter_records(payload: Any) -> Iterable[dict]:
-    """Convenience wrapper around :func:`extract_list`."""
-    yield from extract_list(payload)

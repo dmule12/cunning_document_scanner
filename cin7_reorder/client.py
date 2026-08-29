@@ -174,8 +174,19 @@ class Cin7Client:
             try:
                 response = self._client.get(url, params=_clean(params))
             except httpx.TransportError as exc:
+                # A GET is idempotent, so a network blip earns a retry —
+                # request() already does this, and try_get reads every
+                # purchase in a run, where one blip used to read as an
+                # unreadable purchase and abort a whole apply.
+                if attempt + 1 < MAX_RETRIES:
+                    self._sleep_backoff(attempt)
+                    continue
                 return ProbeResult(
-                    path=url, ok=False, detail=f"transport error: {exc}"
+                    path=url,
+                    ok=False,
+                    detail=(
+                        f"transport error after {MAX_RETRIES} attempts: {exc}"
+                    ),
                 )
 
             if response.status_code == 429:
@@ -328,6 +339,12 @@ class Cin7Client:
                 "in config.yaml if this is expected."
             )
 
+        # A write is retried ONLY on 429, which guarantees the request was
+        # not processed. A transport error or 5xx on a POST is ambiguous —
+        # Cin7 may have applied it before failing to answer — and retrying
+        # an ambiguous POST /purchase is how duplicate purchase orders get
+        # created. Reads are idempotent and retried freely.
+        is_write = method.upper() not in {"GET", "HEAD"}
         last_error: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -339,6 +356,13 @@ class Cin7Client:
                     method, path, params=params, json=json
                 )
             except httpx.TransportError as exc:
+                if is_write:
+                    raise Cin7Error(
+                        f"{method} {path} failed in transit: {exc}. Not "
+                        "retried: the request may already have been applied, "
+                        "and repeating a create can duplicate a purchase "
+                        "order. Check Cin7 before running again."
+                    ) from exc
                 # Network blips are worth retrying; a broken DNS name is not,
                 # but we cannot tell them apart, so bound the attempts.
                 last_error = exc
@@ -359,6 +383,14 @@ class Cin7Client:
                 continue
 
             if response.status_code >= 500:
+                if is_write:
+                    raise Cin7Error(
+                        f"{method} {path} returned {response.status_code}: "
+                        f"{response.text[:500]}. Not retried: a 5xx on a "
+                        "write is ambiguous — Cin7 may have applied it before "
+                        "failing to answer — and repeating a create can "
+                        "duplicate a purchase order."
+                    )
                 last_error = Cin7Error(
                     f"{method} {path} returned {response.status_code}: "
                     f"{response.text[:500]}"
@@ -396,7 +428,9 @@ class Cin7Client:
         raw = response.headers.get("Retry-After")
         if raw:
             try:
-                return max(0.0, float(raw))
+                # Capped: an unattended run sleeping for hours on one huge
+                # header value is worse than retrying a little early.
+                return min(max(0.0, float(raw)), 120.0)
             except ValueError:
                 pass
         return float(min(2**attempt, 60))

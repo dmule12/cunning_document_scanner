@@ -165,13 +165,13 @@ def reconstruct(
                 continue
 
             outstanding_lines += 1
-            base_product_id, base_quantity = bom.units_in_base(
+            for base_product_id, base_quantity in bom.components_in_base(
                 line.product_id, outstanding
-            )
-            counted += base_quantity
-            inbound.add(
-                base_product_id, purchase.location, base_quantity, purchase.id
-            )
+            ):
+                counted += base_quantity
+                inbound.add(
+                    base_product_id, purchase.location, base_quantity, purchase.id
+                )
 
         if not purchase.lines:
             verdict = "no order lines on the record"
