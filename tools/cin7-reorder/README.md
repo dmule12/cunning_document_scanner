@@ -103,8 +103,8 @@ supplier won't fill.
 There is a second gap that costs money more quietly. **An open purchase order for boxes does
 not appear against the sleeve's `OnOrder`.** Cin7 only connects them at receipt, when
 auto-disassembly runs. So anything reading `OnOrder` sees nothing on its way and reorders the
-same shortfall every run — roughly four duplicate orders over a two-week lead time on a
-twice-weekly schedule.
+same shortfall every run — a duplicate order every single day of a two-week lead time on a
+daily schedule.
 
 This tool ignores `OnOrder` entirely and rebuilds the number from open POs.
 
@@ -331,9 +331,9 @@ fragments in the `explain_args` field.
 
 ### On a schedule
 
-`.github/workflows/reorder.yml` runs **`apply`** every Tuesday and Friday at
-08:00 Perth, creating draft purchase orders and posting the report to the run
-summary page. `plan` and `probe` are available from the dispatch menu for a dry
+`.github/workflows/reorder.yml` runs **`apply`** every day at 08:00 Perth,
+creating draft purchase orders and posting the report to the run summary
+page. `plan` and `probe` are available from the dispatch menu for a dry
 run.
 
 It needs `CIN7_ACCOUNT_ID` and `CIN7_APP_KEY` as repository secrets, and only
