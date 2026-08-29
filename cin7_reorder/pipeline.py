@@ -776,6 +776,7 @@ class Pipeline:
                 supplier_id=supplier_id,
                 location=location,
                 reference=reference,
+                fingerprint=written,
                 order_date=f"{date.today().isoformat()}T00:00:00",
                 extra=self.config.purchase.extra_fields,
             )

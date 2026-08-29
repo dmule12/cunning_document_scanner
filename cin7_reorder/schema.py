@@ -655,8 +655,10 @@ def parse_purchase(payload: Mapping[str, Any]) -> Optional[PurchaseOrder]:
         raw_lines = []
 
     marker_reference, marker_fingerprint = split_marker(
-        as_str(get_first(payload, *PURCHASE_MARKER_KEYS))
-        or as_str(get_first(order_mapping, "Memo", "Reference"))
+        pick_marker(
+            as_str(get_first(order_mapping, "Memo", "Reference")),
+            as_str(get_first(payload, *PURCHASE_MARKER_KEYS)),
+        )
     )
 
     received_by_product = _sum_received_quantities(payload)
@@ -915,6 +917,25 @@ def build_marker(reference: str, fingerprint: Optional[str] = None) -> str:
     return f"{reference}{MARKER_FINGERPRINT_SEP}{fingerprint}"
 
 
+def pick_marker(*candidates: Optional[str]) -> Optional[str]:
+    """The most informative marker among several places it may be written.
+
+    The purchase header and the order sub-resource are written separately,
+    and only the order is rewritten on an update — so the header keeps the
+    marker it was created with, without a fingerprint, while the order
+    carries the current one. Taking the first non-empty value found the
+    header's, threw the fingerprint away, and left the draft reading as
+    unverifiable for ever.
+
+    So: prefer a marker that carries a fingerprint over one that does not.
+    """
+    present = [c for c in candidates if c and c.strip()]
+    for candidate in present:
+        if split_marker(candidate)[1]:
+            return candidate
+    return present[0] if present else None
+
+
 def split_marker(text: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Recover ``(reference, fingerprint)`` from a marker string.
 
@@ -935,6 +956,7 @@ def build_purchase_payload(
     supplier_id: str,
     location: str,
     reference: str,
+    fingerprint: Optional[str] = None,
     order_date: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -963,7 +985,7 @@ def build_purchase_payload(
     # The marker, everywhere it might survive. Whichever field this account
     # keeps is the one that lets the next run find this draft again.
     for key in PURCHASE_MARKER_KEYS:
-        payload[key] = reference
+        payload[key] = build_marker(reference, fingerprint)
     if order_date:
         payload["OrderDate"] = order_date
     if extra:

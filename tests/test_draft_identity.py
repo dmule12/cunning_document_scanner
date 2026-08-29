@@ -225,3 +225,31 @@ def test_a_draft_that_differs_is_still_not_adopted():
 
     assert plan.decision == DraftDecision.LEAVE_ALONE
     assert "cannot be ruled out" in plan.reason
+
+
+def test_the_header_marker_does_not_shadow_the_order_memo():
+    """The purchase header and its order are written separately.
+
+    Only the order is rewritten on an update, so the header keeps the marker
+    it was created with — without a fingerprint — while the order carries the
+    current one. Taking the first non-empty marker found the header's and
+    threw the fingerprint away, which left the draft reading as unverifiable
+    for ever: every run said "cannot rule out a human edit" and left it.
+    """
+    record = purchase_record(order_status="DRAFT")
+    record["Note"] = REFERENCE  # written at creation, no fingerprint
+    record["Order"]["Memo"] = schema.build_marker(REFERENCE, "9c1f0d")
+
+    parsed = schema.parse_purchase(record)
+
+    assert parsed.reference == REFERENCE
+    assert parsed.fingerprint == "9c1f0d"
+
+
+def test_the_header_carries_the_fingerprint_from_creation():
+    """Belt and braces: the two agree from the start, not just after a fix."""
+    payload = schema.build_purchase_payload(
+        supplier_id="s1", location="WA", reference=REFERENCE, fingerprint="9c1f0d"
+    )
+    for key in schema.PURCHASE_MARKER_KEYS:
+        assert schema.split_marker(payload[key]) == (REFERENCE, "9c1f0d")
