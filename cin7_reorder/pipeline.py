@@ -50,7 +50,7 @@ from .models import (
     SkippedProduct,
     SuggestedLine,
 )
-from .reorder import Demand, availability_for, evaluate
+from .reorder import EPSILON, Demand, availability_for, evaluate
 from .reorderpoints import resolve as resolve_reorder_point
 
 log = logging.getLogger(__name__)
@@ -652,6 +652,21 @@ class Pipeline:
                 continue
 
             if product.supplier_id not in suppliers:
+                # The last silent skip, and it answers the question a person
+                # actually asks: "why is X missing from the order?" A product
+                # below its minimum whose supplier is not opted in is not a
+                # mistake — but invisibly dropping it means the only way to
+                # discover the supplier attribution is to notice an absence.
+                # Products NOT below their minimum stay silent; reporting the
+                # whole catalogue's supplier assignments helps no one.
+                self._report_not_opted_in(
+                    result=result,
+                    product=product,
+                    reorder_params=reorder_params,
+                    availability=availability,
+                    inbound=inbound,
+                    locations=locations,
+                )
                 continue
 
             for location in locations:
@@ -703,6 +718,65 @@ class Pipeline:
                     result.lines.append(line)
                 if skip is not None:
                     result.skipped.append(skip)
+
+    def _report_not_opted_in(
+        self,
+        *,
+        result: RunResult,
+        product: Product,
+        reorder_params: dict[str, list[ReorderParameters]],
+        availability: dict[tuple[str, str], Availability],
+        inbound,
+        locations: list[str],
+    ) -> None:
+        """Name a product that WOULD have been ordered, were its supplier in.
+
+        Uses the same trigger arithmetic as evaluate(), because the point is
+        to answer "why is this missing" with the same judgement the order
+        lines were built with. Two causes look identical from the outside and
+        the detail distinguishes them: the supplier genuinely is not meant to
+        be automated, or the product's DEFAULT supplier in Cin7 is not the
+        one the user buys it from — a product can list several suppliers, and
+        this tool follows the default.
+        """
+        for location in locations:
+            if not self.config.includes_location(location):
+                continue
+            point = resolve_reorder_point(
+                reorder_params.get(product.id, []),
+                supplier_id=product.supplier_id,
+                location=location,
+            )
+            if point is None:
+                continue
+            stock = availability_for(availability, product.id, location)
+            position = (
+                stock.on_hand
+                + inbound.get(product.id, location)
+                - stock.allocated
+            )
+            if position > point.minimum + EPSILON:
+                continue
+            supplier = (
+                product.supplier_name or product.supplier_id or "(unknown)"
+            )
+            result.skipped.append(
+                SkippedProduct(
+                    base_product_id=product.id,
+                    base_sku=product.sku,
+                    location=location,
+                    reason=SkipReason.SUPPLIER_NOT_OPTED_IN,
+                    detail=(
+                        f"{product.name or product.sku} is at or below its "
+                        f"minimum ({position:g} vs {point.minimum:g}) but its "
+                        f"supplier '{supplier}' is not automated. Either add "
+                        "that supplier to `suppliers.pin`, or — if you buy "
+                        "this from someone else — fix the DEFAULT supplier "
+                        "on the product's Suppliers tab in Cin7: the product "
+                        "may list several and this tool follows the default."
+                    ),
+                )
+            )
 
     def _enforce_run_caps(self, result: RunResult) -> None:
         cap = self.config.safety.max_total_lines
