@@ -492,3 +492,89 @@ def test_a_reorder_point_with_no_supplier_is_reported(tmp_path):
 
     skip = next(s for s in result.skipped if s.reason is SkipReason.NO_SUPPLIER)
     assert skip.base_sku == "ORPHAN"
+
+
+def _catalogue_handler(products):
+    def handler(request: httpx.Request) -> httpx.Response:
+        tail = request.url.path.split("/ExternalApi/v2/", 1)[-1]
+        page = int(request.url.params.get("page", 1))
+
+        def page1(key, rows):
+            return httpx.Response(200, json={key: rows if page == 1 else []})
+
+        if tail == "supplier":
+            return page1(
+                "SupplierList",
+                [{"ID": SUPPLIER, "Name": "BioPak", "AdditionalAttribute1": "Yes"}],
+            )
+        if tail == "product":
+            return page1("Products", products)
+        if tail.endswith("productAvailability"):
+            if not tail.startswith("ref/"):
+                return httpx.Response(200, text="<html>x</html>")
+            # At least one row: an envelope of empty lists deliberately does
+            # not count as a resolved endpoint.
+            return page1(
+                "ProductAvailabilityList",
+                [{"ProductID": "other", "Location": "WA", "OnHand": 1}],
+            )
+        if tail == "purchaseList":
+            return page1("PurchaseList", [])
+        return httpx.Response(200, text="<html>x</html>")
+
+    return handler
+
+
+def test_junk_without_a_real_minimum_is_not_reported_as_supplierless(tmp_path):
+    """The wall of noise a live run produced.
+
+    Cin7 defaults MinimumBeforeReorder to 0 on every product, and
+    parse_reorder_parameters returns an entry either way — so gating on mere
+    presence reported the entire junk half of the catalogue (FREIGHT, MISC,
+    spare parts) as "has a reorder point but no supplier", burying the
+    handful of products the section exists to surface.
+    """
+    result = run(
+        tmp_path,
+        _catalogue_handler(
+            [
+                {"ID": "junk", "SKU": "FREIGHT", "Name": "Freight",
+                 "MinimumBeforeReorder": 0, "Suppliers": []},
+                {"ID": "real", "SKU": "NAPKINS", "Name": "Napkins Plain",
+                 "MinimumBeforeReorder": 600, "ReorderQuantity": 600,
+                 "Suppliers": []},
+            ]
+        ),
+        dry_run=True,
+    )
+
+    supplierless = [
+        s for s in result.skipped if s.reason is SkipReason.NO_SUPPLIER
+    ]
+    assert [s.base_sku for s in supplierless] == ["NAPKINS"]
+    # And the detail carries the NAME, because a bare SKU cannot be matched
+    # against what Cin7's own screens show.
+    assert "Napkins Plain" in supplierless[0].detail
+    assert "Suppliers tab" in supplierless[0].detail
+
+
+def test_the_skip_table_is_capped_in_markdown_not_json(tmp_path):
+    from cin7_reorder.models import RunResult, SkippedProduct
+    from cin7_reorder.report import render_json, render_markdown
+
+    result = RunResult(
+        skipped=[
+            SkippedProduct(
+                base_product_id=str(n), base_sku=f"SKU{n:03}", location="WA",
+                reason=SkipReason.NO_SUPPLIER, detail="d",
+            )
+            for n in range(120)
+        ]
+    )
+
+    markdown = render_markdown(result, dry_run=True)
+    assert "SKU039" in markdown and "SKU041" not in markdown
+    assert "80 more" in markdown
+
+    payload = json.loads(render_json(result, dry_run=True))
+    assert len(payload["skipped"]) == 120
