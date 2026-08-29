@@ -578,3 +578,85 @@ def test_the_skip_table_is_capped_in_markdown_not_json(tmp_path):
 
     payload = json.loads(render_json(result, dry_run=True))
     assert len(payload["skipped"]) == 120
+
+
+def test_a_low_product_of_an_unpinned_supplier_is_named_not_silent(tmp_path):
+    """The last silent skip, and the question a person actually asks.
+
+    "Why is the chai missing from the order?" had no answer in the report
+    when the product's default supplier was not the pinned one — a product
+    can list several suppliers in Cin7 and this tool follows the default, so
+    the wrong default made products vanish without a trace. Products that
+    are NOT below their minimum stay silent, or the section would carry the
+    whole catalogue's supplier assignments.
+    """
+    products = [
+        {
+            "ID": "chai", "SKU": "CHAI1KG", "Name": "Chai Bond St Natural - 1kg",
+            "MinimumBeforeReorder": 60, "ReorderQuantity": 60,
+            "Suppliers": [{"SupplierID": "sup-other", "Name": "Old Wholesaler"}],
+        },
+        {
+            "ID": "fine", "SKU": "STOCKED", "Name": "Plenty on hand",
+            "MinimumBeforeReorder": 1, "ReorderQuantity": 1,
+            "Suppliers": [{"SupplierID": "sup-other", "Name": "Old Wholesaler"}],
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tail = request.url.path.split("/ExternalApi/v2/", 1)[-1]
+        page = int(request.url.params.get("page", 1))
+
+        def page1(key, rows):
+            return httpx.Response(200, json={key: rows if page == 1 else []})
+
+        if tail == "supplier":
+            return page1(
+                "SupplierList",
+                [
+                    {"ID": SUPPLIER, "Name": "BioPak", "AdditionalAttribute1": "Yes"},
+                    {"ID": "sup-other", "Name": "Old Wholesaler"},
+                ],
+            )
+        if tail == "product":
+            return page1("Products", products)
+        if tail.endswith("productAvailability"):
+            if not tail.startswith("ref/"):
+                return httpx.Response(200, text="<html>x</html>")
+            return page1(
+                "ProductAvailabilityList",
+                [
+                    {"ProductID": "chai", "Location": "WA", "OnHand": 50},
+                    {"ProductID": "fine", "Location": "WA", "OnHand": 400},
+                ],
+            )
+        if tail == "purchaseList":
+            return page1("PurchaseList", [])
+        return httpx.Response(200, text="<html>x</html>")
+
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=200),
+        read_only=True,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        config=Config(
+            suppliers=SupplierConfig(
+                attribute_field="AdditionalAttribute1", pin=("BioPak",)
+            )
+        ),
+        state_path=tmp_path / "state.json",
+        dry_run=True,
+    ).run()
+
+    rows = [
+        s for s in result.skipped
+        if s.reason is SkipReason.SUPPLIER_NOT_OPTED_IN
+    ]
+    assert [s.base_sku for s in rows] == ["CHAI1KG"]
+    assert "Chai Bond St" in rows[0].detail
+    assert "Old Wholesaler" in rows[0].detail
+    assert "default" in rows[0].detail.lower()
