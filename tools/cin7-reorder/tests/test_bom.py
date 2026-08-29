@@ -143,13 +143,13 @@ def test_is_pack_identifies_parents(bom):
 
 
 def test_units_in_base_converts_pack_quantities(bom):
-    product_id, quantity = bom.units_in_base(BOX, 3)
+    ((product_id, quantity),) = bom.components_in_base(BOX, 3)
     assert product_id == SLEEVE
     assert quantity == 72.0
 
 
 def test_units_in_base_passes_through_base_products(bom):
-    product_id, quantity = bom.units_in_base(SINGLE, 7)
+    ((product_id, quantity),) = bom.components_in_base(SINGLE, 7)
     assert product_id == SINGLE
     assert quantity == 7.0
 
@@ -158,4 +158,4 @@ def test_empty_index_is_usable(bom):
     index = BomIndex.build([])
     assert len(index) == 0
     assert index.resolve(SLEEVE) is None
-    assert index.units_in_base(SLEEVE, 5) == (SLEEVE, 5)
+    assert index.components_in_base(SLEEVE, 5) == [(SLEEVE, 5)]

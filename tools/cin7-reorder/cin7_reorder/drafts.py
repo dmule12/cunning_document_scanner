@@ -111,6 +111,23 @@ def decide(
             reason="draft was not created by this tool",
         )
 
+    if not existing.lines:
+        # A header with no lines is the wreckage of a run that created the
+        # purchase and then failed writing the lines. There is nothing on it
+        # a human could have edited, so the never-clobber rule has nothing to
+        # protect — and without this branch the fingerprint check below reads
+        # the emptiness as an edit and wedges this supplier and location out
+        # of ordering on every future run, for ever.
+        return DraftPlan(
+            decision=DraftDecision.UPDATE,
+            purchase_id=existing.id,
+            reference=existing.reference or reference,
+            reason=(
+                "draft is empty — an earlier run created the header and "
+                "failed writing the lines; filling it in destroys nothing"
+            ),
+        )
+
     if stored_fingerprint is None:
         # Our reference, but no record of what we wrote.
         #
@@ -169,7 +186,10 @@ class FingerprintStore:
 
     A JSON file rather than a database: the data is tiny, and being able to
     read and hand-edit it matters more than anything a database would offer.
-    In CI it is carried between runs as a workflow artifact.
+
+    Vestigial by design: the fingerprint now travels on the purchase order
+    itself (in the marker memo) and this file is only a fallback for drafts
+    written before that change. It is not carried between CI runs.
 
     A missing or corrupt store is not fatal. It degrades to "leave every
     existing draft alone", which is the safe direction.
