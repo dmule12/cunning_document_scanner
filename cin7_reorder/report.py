@@ -43,6 +43,10 @@ _SKIP_LABEL = {
 #: printed. A report nobody scrolls to the end of is a report nobody reads.
 _MAX_SUPPLIER_NAMES = 25
 
+#: Same reasoning for the needs-attention skip table. The JSON report always
+#: carries every row.
+_MAX_SKIP_ROWS = 40
+
 
 def render_markdown(result: RunResult, *, dry_run: bool) -> str:
     lines: list[str] = []
@@ -273,12 +277,19 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
         lines.append("| SKU | Location | Reason | Detail |")
         lines.append("| --- | --- | --- | --- |")
-        for skip in sorted(actionable, key=lambda s: (s.reason.value, s.base_sku)):
+        shown = sorted(actionable, key=lambda s: (s.reason.value, s.base_sku))
+        for skip in shown[:_MAX_SKIP_ROWS]:
             lines.append(
                 f"| {skip.base_sku} "
                 f"| {skip.location or '—'} "
                 f"| {_SKIP_LABEL.get(skip.reason, skip.reason.value)} "
                 f"| {skip.detail} |"
+            )
+        overflow = len(shown) - _MAX_SKIP_ROWS
+        if overflow > 0:
+            lines.append(
+                f"| … | | | and {overflow} more — full list in the JSON "
+                "report alongside this one |"
             )
         lines.append("")
 

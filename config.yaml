@@ -38,6 +38,8 @@ suppliers:
   # fragment of the supplier name.
   pin:
     - BioPak
+    - Somage
+    - Merre
 
 # ---------------------------------------------------------------------------
 # Locations

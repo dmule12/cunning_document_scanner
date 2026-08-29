@@ -622,11 +622,18 @@ class Pipeline:
                 continue
 
             if not product.supplier_id:
-                # Only reportable when somebody set a reorder point: a minimum
-                # with no supplier is a product that can never be auto-ordered,
-                # and nothing else would ever say so. Products with neither
-                # stay silent — reporting the whole catalogue helps no one.
-                if reorder_params.get(product.id):
+                # Only reportable when somebody set a USABLE reorder point —
+                # a minimum above zero. parse_reorder_parameters returns an
+                # entry for every product because Cin7 defaults the field to
+                # 0, and gating on mere presence put the entire junk half of
+                # the catalogue (freight lines, marketing items, spare parts)
+                # into the report, burying the handful of real products the
+                # section exists to surface.
+                has_real_minimum = any(
+                    p.minimum_before_reorder and p.minimum_before_reorder > 0
+                    for p in reorder_params.get(product.id, [])
+                )
+                if has_real_minimum:
                     result.skipped.append(
                         SkippedProduct(
                             base_product_id=product.id,
@@ -634,9 +641,11 @@ class Pipeline:
                             location="",
                             reason=SkipReason.NO_SUPPLIER,
                             detail=(
-                                f"{product.sku} has a reorder point but no "
-                                "supplier on the product, so it can never be "
-                                "ordered automatically."
+                                f"{product.name or product.sku} has a reorder "
+                                "point but no supplier on the product, so it "
+                                "can never be ordered automatically. Add the "
+                                "supplier on the product's Suppliers tab in "
+                                "Cin7."
                             ),
                         )
                     )
@@ -665,7 +674,8 @@ class Pipeline:
                             location=location,
                             reason=SkipReason.NO_REORDER_PARAMETERS,
                             detail=(
-                                "No MinimumBeforeReorder set at product or "
+                                f"{product.name or product.sku}: no "
+                                "MinimumBeforeReorder set at product or "
                                 "location level."
                             ),
                         )
