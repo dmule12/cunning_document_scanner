@@ -20,7 +20,7 @@ availability row as zeros is what keeps those visible.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -625,6 +625,36 @@ class Pipeline:
 
     # -- evaluation --------------------------------------------------------
 
+    @staticmethod
+    def _order_supplier(
+        product: Product, bom: BomIndex, products: dict[str, Product]
+    ) -> Product:
+        """The product, carrying the supplier the order would actually go to.
+
+        A base SKU often has no supplier of its own because nobody buys the
+        base unit — the pack on its bill of materials is the thing bought,
+        and the supplier lives there. Confirmed live on 'Cup Bio Pak Art
+        Series 16oz': the sleeve names no supplier, the box it is ordered as
+        does. The purchase order is raised against the pack, so when the
+        base names nobody, the pack's supplier is followed instead.
+
+        Only a fallback: a supplier set on the base product still wins, so
+        nothing that ordered correctly before changes hands.
+        """
+        if product.supplier_id:
+            return product
+        link = bom.resolve(product.id)
+        if link is None:
+            return product
+        pack = products.get(link.pack_product_id)
+        if pack is None or not pack.supplier_id:
+            return product
+        return replace(
+            product,
+            supplier_id=pack.supplier_id,
+            supplier_name=pack.supplier_name,
+        )
+
     def _evaluate_all(
         self,
         *,
@@ -643,6 +673,8 @@ class Pipeline:
             if bom.is_pack(product.id):
                 continue
 
+            product = self._order_supplier(product, bom, products)
+
             if not product.supplier_id:
                 # Only reportable when somebody set a USABLE reorder point —
                 # a minimum above zero. parse_reorder_parameters returns an
@@ -656,6 +688,17 @@ class Pipeline:
                     for p in reorder_params.get(product.id, [])
                 )
                 if has_real_minimum:
+                    link = bom.resolve(product.id)
+                    where = "on the product's Suppliers tab in Cin7."
+                    if link is not None:
+                        # The pack was checked too (_order_supplier), so a
+                        # remedy naming only the base would send someone to
+                        # fix half of the actual problem.
+                        where = (
+                            "in Cin7, on the product's own Suppliers tab or "
+                            f"on pack {link.display_sku} — what actually "
+                            "gets ordered; either works."
+                        )
                     result.skipped.append(
                         SkippedProduct(
                             base_product_id=product.id,
@@ -664,10 +707,9 @@ class Pipeline:
                             reason=SkipReason.NO_SUPPLIER,
                             detail=(
                                 f"{product.name or product.sku} has a reorder "
-                                "point but no supplier on the product, so it "
-                                "can never be ordered automatically. Add the "
-                                "supplier on the product's Suppliers tab in "
-                                "Cin7."
+                                "point but no supplier, so it can never be "
+                                "ordered automatically. Add the supplier "
+                                + where
                             ),
                         )
                     )
@@ -902,6 +944,9 @@ class Pipeline:
         ]
 
         listed = schema.parse_product_suppliers(raw)
+        effective = self._order_supplier(product, bom, products)
+        via_pack = bool(effective.supplier_id) and not product.supplier_id
+
         if listed:
             out.append("    Suppliers the API returns for this product:")
             for sid, sname, is_default in listed:
@@ -914,6 +959,11 @@ class Pipeline:
                 out.append(
                     f"      - {sname or '(unnamed)'} ({sid or 'no id'}){suffix}"
                 )
+        elif via_pack:
+            out.append(
+                "    Suppliers the API returns for this product: none on "
+                "the product itself."
+            )
         else:
             out.append(
                 "    Suppliers the API returns for this product: NONE. "
@@ -922,6 +972,16 @@ class Pipeline:
                 "re-save the supplier, then run explain again to confirm it "
                 "took."
             )
+
+        if via_pack:
+            pack_link = bom.resolve(product.id)
+            out.append(
+                f"    Pack {pack_link.display_sku} — what actually gets "
+                f"ordered — names "
+                f"{effective.supplier_name or effective.supplier_id}, and "
+                "the run follows that."
+            )
+            product = effective
 
         followed = product.supplier_id
         if not followed:

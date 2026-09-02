@@ -70,6 +70,27 @@ def handler(request: httpx.Request) -> httpx.Response:
                     ],
                 },
                 {
+                    # No supplier of its own, but the pack it is ordered as
+                    # has one. Live case: 'Cup Bio Pak Art Series 16oz' —
+                    # nobody buys sleeves, so the supplier lives on the box.
+                    "ID": "p-cup",
+                    "SKU": "CUP16",
+                    "Name": "Cup Art Series 16oz - Sleeve of 50",
+                    "MinimumBeforeReorder": 120,
+                    "ReorderQuantity": 100,
+                },
+                {
+                    "ID": "p-cupbox",
+                    "SKU": "CUPBOX",
+                    "Name": "Cup Art Series 16oz - Box of 20 Sleeves",
+                    "Suppliers": [
+                        {"SupplierID": PINNED, "SupplierName": "BioPak"}
+                    ],
+                    "BillOfMaterialsProducts": [
+                        {"ProductID": "p-cup", "Quantity": 20}
+                    ],
+                },
+                {
                     # A pack: never evaluated against its own stock.
                     "ID": "p-chai-box",
                     "SKU": "CHAIBOX",
@@ -86,14 +107,17 @@ def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, text="<html>Object moved</html>")
         return page1(
             "ProductAvailabilityList",
-            [{"ProductID": "p-chai", "Location": "WA", "OnHand": 4}],
+            [
+                {"ProductID": "p-chai", "Location": "WA", "OnHand": 4},
+                {"ProductID": "p-cup", "Location": "WA", "OnHand": 117},
+            ],
         )
     if tail == "purchaseList":
         return page1("PurchaseList", [])
     return httpx.Response(200, text="<html>Object moved</html>")
 
 
-def explain(fragments):
+def _pipeline():
     client = Cin7Client(
         Credentials(account_id="a", app_key="k"),
         ApiConfig(daily_call_budget=200),
@@ -101,13 +125,16 @@ def explain(fragments):
         transport=httpx.MockTransport(handler),
         rate_limiter=NullRateLimiter(),
     )
-    pipeline = Pipeline(
+    return Pipeline(
         client=client,
         config=Config(suppliers=SupplierConfig(pin=("BioPak",))),
         state_path=None,
         dry_run=True,
     )
-    return pipeline.explain(fragments)
+
+
+def explain(fragments):
+    return _pipeline().explain(fragments)
 
 
 def test_an_unpinned_supplier_is_named_with_both_remedies():
@@ -136,6 +163,27 @@ def test_a_pack_sku_explains_the_component_indirection():
     out = explain(["CHAIBOX"])
     assert "PACK SKU" in out
     assert "CHAI1" in out
+
+
+def test_a_base_without_a_supplier_follows_its_packs_supplier():
+    """Live case: the sleeve names no supplier because nobody buys sleeves —
+    the box on its BOM is the thing bought, and the supplier lives there.
+    The order is raised against the box, so the box's supplier is the one
+    to follow, not a reason to skip."""
+    result = _pipeline().run()
+    line = next(l for l in result.lines if l.base_sku == "CUP16")
+    assert line.supplier_id == PINNED
+    assert line.order_sku == "CUPBOX"
+    assert line.quantity == 5  # ceil(100 / 20)
+    assert not any(s.base_sku == "CUP16" for s in result.skipped)
+
+
+def test_explain_says_the_supplier_came_from_the_pack():
+    out = explain(["CUP16"])
+    assert "none on the product itself" in out
+    assert "CUPBOX" in out
+    assert "the run follows that" in out
+    assert "WOULD ORDER" in out
 
 
 def test_no_match_is_an_answer_not_an_error():

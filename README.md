@@ -402,6 +402,12 @@ Products with no minimum set — or a minimum of 0, which is Cin7's default — 
 listed. No reorder point means nobody has decided that product should be reordered
 automatically.
 
+**The supplier is read off the base product, falling back to its pack.** A base SKU often
+names no supplier of its own, because nobody buys the base unit — the pack on its bill of
+materials is the thing bought, and the supplier lives there. Since the purchase order is
+raised against the pack anyway, the pack's supplier is followed whenever the base names
+nobody. A supplier set on the base still wins.
+
 > An earlier version of this tool got this wrong. It assumed only lead days, safety days and
 > reorder quantity were available and derived a par level by estimating demand from sales
 > history. That machinery is gone; the number was stored data all along.
