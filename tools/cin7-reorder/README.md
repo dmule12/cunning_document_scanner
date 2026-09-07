@@ -402,6 +402,12 @@ Products with no minimum set — or a minimum of 0, which is Cin7's default — 
 listed. No reorder point means nobody has decided that product should be reordered
 automatically.
 
+**Line prices come from Cin7's stored supplier cost.** Each draft line carries the Cost
+recorded for that supplier on the ordered SKU's Suppliers tab (the pack's record, when a pack
+is ordered). No recorded cost means the price is left blank and the line is flagged in the
+report — never guessed. A price alone is not part of the draft fingerprint, so correcting a
+cost in Cin7 flows onto the draft the next time its quantities change.
+
 **The supplier is read off the base product, falling back to its pack.** A base SKU often
 names no supplier of its own, because nobody buys the base unit — the pack on its bill of
 materials is the thing bought, and the supplier lives there. Since the purchase order is

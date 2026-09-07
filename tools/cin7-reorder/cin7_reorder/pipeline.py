@@ -142,7 +142,7 @@ class Pipeline:
             )
             return
 
-        products, reorder_params, boms, _ = self._load_products()
+        products, reorder_params, boms, _, costs = self._load_products()
         bom = self._build_bom_index(boms, products, result)
         availability = self._load_availability(result)
         purchases = self._load_purchases(result, suppliers)
@@ -182,6 +182,7 @@ class Pipeline:
             inbound=inbound,
             suppliers=suppliers,
             locations=locations,
+            costs=costs,
         )
 
         self._enforce_run_caps(result)
@@ -235,6 +236,7 @@ class Pipeline:
         dict[str, list[ReorderParameters]],
         list[BillOfMaterials],
         dict[str, dict],
+        dict[str, dict[str, float]],
     ]:
         """One pass over the catalogue, yielding everything it carries.
 
@@ -252,6 +254,8 @@ class Pipeline:
         params: dict[str, list[ReorderParameters]] = {}
         boms: list[BillOfMaterials] = []
         captured: dict[str, dict] = {}
+        #: product id -> {supplier id -> unit cost}, for pricing draft lines.
+        costs: dict[str, dict[str, float]] = {}
 
         # The include flags matter enormously: without them Cin7 returns every
         # nested collection as an empty list, which reads as "no product has a
@@ -269,6 +273,10 @@ class Pipeline:
                 if any(f in haystack for f in capture_fragments):
                     captured[product.id] = dict(record)
 
+            supplier_costs = schema.parse_supplier_costs(record)
+            if supplier_costs:
+                costs[product.id] = supplier_costs
+
             parsed = schema.parse_reorder_parameters(record)
             if parsed:
                 params[product.id] = parsed
@@ -278,7 +286,7 @@ class Pipeline:
                 if bom is not None and bom.components:
                     boms.append(bom)
 
-        return products, params, boms, captured
+        return products, params, boms, captured, costs
 
     def _build_bom_index(
         self,
@@ -666,6 +674,7 @@ class Pipeline:
         inbound,
         suppliers: dict[str, str],
         locations: list[str],
+        costs: dict[str, dict[str, float]],
     ) -> None:
         for product in products.values():
             # A pack SKU is not stock in its own right — it disassembles on
@@ -779,9 +788,32 @@ class Pipeline:
                 )
 
                 if line is not None:
-                    result.lines.append(line)
+                    result.lines.append(self._price_line(line, costs))
                 if skip is not None:
                     result.skipped.append(skip)
+
+    @staticmethod
+    def _price_line(
+        line: SuggestedLine, costs: dict[str, dict[str, float]]
+    ) -> SuggestedLine:
+        """Attach the supplier's stored cost for the SKU actually ordered.
+
+        The price is read off the ordered product's Suppliers entry for the
+        supplier being ordered from — the pack's entry when a pack is
+        ordered, because the box is what has a box price. No match means no
+        price and a flag, never a guess: a blank on the draft is obviously
+        unfinished, a wrong number is quietly signed off.
+
+        Deliberately not part of the draft fingerprint: a cost corrected in
+        Cin7 shows up the next time quantities change, and a price change
+        alone never counts as a human edit to protect.
+        """
+        cost = costs.get(line.order_product_id, {}).get(line.supplier_id)
+        if cost:
+            return replace(line, unit_price=cost)
+        return replace(
+            line, flags=line.flags + (LineFlag.NO_SUPPLIER_PRICE,)
+        )
 
     def _report_not_opted_in(
         self,
@@ -862,7 +894,7 @@ class Pipeline:
 
         result = RunResult()
         opted_in = self._load_suppliers(result)
-        products, reorder_params, boms, raw_records = self._load_products(
+        products, reorder_params, boms, raw_records, _ = self._load_products(
             capture_fragments=wanted
         )
         bom = BomIndex.build(boms)
@@ -948,6 +980,7 @@ class Pipeline:
         via_pack = bool(effective.supplier_id) and not product.supplier_id
 
         if listed:
+            costs_here = schema.parse_supplier_costs(raw)
             out.append("    Suppliers the API returns for this product:")
             for sid, sname, is_default in listed:
                 tags = []
@@ -955,6 +988,10 @@ class Pipeline:
                     tags.append("marked default")
                 if sid and sid in opted_in:
                     tags.append("automated")
+                cost = costs_here.get(sid) if sid else None
+                tags.append(
+                    f"cost {cost:g}" if cost else "no cost recorded"
+                )
                 suffix = f"  [{', '.join(tags)}]" if tags else ""
                 out.append(
                     f"      - {sname or '(unnamed)'} ({sid or 'no id'}){suffix}"
@@ -1284,6 +1321,7 @@ class Pipeline:
                     product_id=line.order_product_id,
                     sku=line.order_sku,
                     quantity=line.quantity,
+                    price=line.unit_price,
                     extra=self.config.purchase.line_fields,
                 )
                 for line in lines

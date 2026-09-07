@@ -212,6 +212,10 @@ class LineFlag(str, Enum):
     #: this product will trigger again on the next run. Usually means the
     #: reorder quantity is set too low in Cin7 for current demand.
     BELOW_MINIMUM_AFTER_ORDER = "below_minimum_after_order"
+    #: No stored cost for this supplier on the ordered product's Suppliers
+    #: entry in Cin7, so the draft line's price was left blank rather than
+    #: guessed. Record the cost in Cin7 and the next run fills it in.
+    NO_SUPPLIER_PRICE = "no_supplier_price"
 
 
 class SkipReason(str, Enum):
@@ -259,6 +263,12 @@ class SuggestedLine:
 
     flags: tuple[LineFlag, ...] = ()
     inbound_sources: tuple[str, ...] = ()
+
+    #: The supplier's stored cost per ordered unit (per pack, when a pack is
+    #: ordered), read off the ordered product's Suppliers entry in Cin7.
+    #: ``None`` means Cin7 holds no cost for that supplier and the draft line
+    #: goes out with the price blank.
+    unit_price: Optional[float] = None
 
     @property
     def is_pack(self) -> bool:

@@ -297,6 +297,37 @@ def parse_product_suppliers(
     ]
 
 
+#: Where a supplier's buy price sits on a product's Suppliers entry. "Cost"
+#: is Cin7 Core's field; the rest are defensive spellings.
+SUPPLIER_COST_KEYS = ("Cost", "SupplierCost", "UnitCost", "Price")
+
+
+def parse_supplier_costs(payload: Mapping[str, Any]) -> dict[str, float]:
+    """Supplier id -> unit cost, from the product's Suppliers collection.
+
+    This is the price that supplier charges for THIS product — the number a
+    purchase order line wants. Zero and missing costs are left out: a zero
+    price on a draft reads as free stock, and a blank is more honestly
+    "nobody has recorded the price" than 0.00 is.
+    """
+    costs: dict[str, float] = {}
+    suppliers = get_first(
+        payload, "Suppliers", "ProductSuppliers", "SupplierList", default=[]
+    )
+    if not isinstance(suppliers, list):
+        return costs
+    for raw in suppliers:
+        if not isinstance(raw, Mapping):
+            continue
+        supplier_id = as_str(get_first(raw, "SupplierID", "ID", "Id"))
+        if not supplier_id:
+            continue
+        cost = as_float(get_first(raw, *SUPPLIER_COST_KEYS), default=0.0)
+        if cost > 0:
+            costs[supplier_id] = cost
+    return costs
+
+
 # ---------------------------------------------------------------------------
 # Availability
 # ---------------------------------------------------------------------------
@@ -1061,6 +1092,7 @@ def build_purchase_line(
     product_id: str,
     sku: str,
     quantity: float,
+    price: Optional[float] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """One order line.
@@ -1069,6 +1101,12 @@ def build_purchase_line(
     typically — from `purchase.line_fields` in config.yaml. Product, SKU and
     quantity are ours and cannot be overridden: they are the entire content of
     the decision, and a config file has no business changing them.
+
+    ``price`` is the supplier's stored cost read off the product record in
+    Cin7 — never a guess. ``None`` leaves the field off entirely: a blank
+    price on a draft is obviously unfinished, a wrong one is quietly signed
+    off. ``Total`` is sent consistent with it so the draft reads correctly
+    before anyone touches it.
     """
     line = dict(extra or {})
     line.update(
@@ -1078,4 +1116,7 @@ def build_purchase_line(
             "Quantity": quantity,
         }
     )
+    if price is not None:
+        line["Price"] = price
+        line["Total"] = round(price * quantity, 2)
     return line

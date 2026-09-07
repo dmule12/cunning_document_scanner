@@ -12,7 +12,8 @@ import httpx
 
 from cin7_reorder.client import Cin7Client, NullRateLimiter
 from cin7_reorder.config import ApiConfig, Config, Credentials, SupplierConfig
-from cin7_reorder.models import RunResult, SkipReason, SkippedProduct
+from cin7_reorder import schema
+from cin7_reorder.models import LineFlag, RunResult, SkipReason, SkippedProduct
 from cin7_reorder.pipeline import Pipeline
 from cin7_reorder.report import render_markdown
 
@@ -84,10 +85,26 @@ def handler(request: httpx.Request) -> httpx.Response:
                     "SKU": "CUPBOX",
                     "Name": "Cup Art Series 16oz - Box of 20 Sleeves",
                     "Suppliers": [
-                        {"SupplierID": PINNED, "SupplierName": "BioPak"}
+                        {
+                            "SupplierID": PINNED,
+                            "SupplierName": "BioPak",
+                            "Cost": 55.4,
+                        }
                     ],
                     "BillOfMaterialsProducts": [
                         {"ProductID": "p-cup", "Quantity": 20}
+                    ],
+                },
+                {
+                    # An automated supplier but no recorded cost: the line
+                    # must go out with the price blank, and flagged.
+                    "ID": "p-lid",
+                    "SKU": "LID90",
+                    "Name": "Lid 90mm",
+                    "MinimumBeforeReorder": 10,
+                    "ReorderQuantity": 20,
+                    "Suppliers": [
+                        {"SupplierID": PINNED, "SupplierName": "BioPak"}
                     ],
                 },
                 {
@@ -176,6 +193,33 @@ def test_a_base_without_a_supplier_follows_its_packs_supplier():
     assert line.order_sku == "CUPBOX"
     assert line.quantity == 5  # ceil(100 / 20)
     assert not any(s.base_sku == "CUP16" for s in result.skipped)
+
+
+def test_a_line_carries_the_packs_stored_supplier_cost():
+    """The price on a draft line is Cin7's own recorded Cost for the ordered
+    SKU — the pack's, since the pack is what is bought — never a guess."""
+    result = _pipeline().run()
+    line = next(l for l in result.lines if l.order_sku == "CUPBOX")
+    assert line.unit_price == 55.4
+    assert LineFlag.NO_SUPPLIER_PRICE not in line.flags
+
+
+def test_a_missing_cost_leaves_the_price_blank_and_flags_the_line():
+    result = _pipeline().run()
+    line = next(l for l in result.lines if l.order_sku == "LID90")
+    assert line.unit_price is None
+    assert LineFlag.NO_SUPPLIER_PRICE in line.flags
+
+
+def test_a_priced_line_sends_price_and_a_consistent_total():
+    priced = schema.build_purchase_line(
+        product_id="x", sku="S", quantity=5, price=55.4
+    )
+    assert priced["Price"] == 55.4
+    assert priced["Total"] == 277.0
+
+    blank = schema.build_purchase_line(product_id="x", sku="S", quantity=5)
+    assert "Price" not in blank and "Total" not in blank
 
 
 def test_explain_says_the_supplier_came_from_the_pack():
