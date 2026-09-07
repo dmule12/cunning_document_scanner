@@ -27,6 +27,9 @@ _FLAG_LABEL = {
     LineFlag.CAP_EXCEEDED: "EXCEEDS SAFETY CAP",
     LineFlag.MOQ_APPLIED: "raised to MOQ",
     LineFlag.BELOW_MINIMUM_AFTER_ORDER: "still below minimum after this order",
+    LineFlag.NO_SUPPLIER_PRICE: (
+        "no cost recorded for this supplier in Cin7 — price left blank"
+    ),
 }
 
 _SKIP_LABEL = {
@@ -180,17 +183,20 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
         lines.append(
             "| Base SKU | Ordered as | Location | Min | On hand | Alloc | Inbound "
-            "| Position | Short by | Reorder qty | Pack | Qty | Notes |"
+            "| Position | Short by | Reorder qty | Pack | Qty | Unit price | Notes |"
         )
         lines.append(
             "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
-            "| ---: | ---: | --- |"
+            "| ---: | ---: | ---: | --- |"
         )
         for line in sorted(
             result.lines, key=lambda ln: (ln.location, ln.base_sku)
         ):
             notes = ", ".join(_FLAG_LABEL.get(f, f.value) for f in line.flags)
             pack = f"×{line.units_per_pack:g}" if line.is_pack else "—"
+            price = (
+                f"{line.unit_price:,.2f}" if line.unit_price is not None else "—"
+            )
             lines.append(
                 f"| {line.base_sku} "
                 f"| {line.order_sku} "
@@ -204,6 +210,7 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
                 f"| {line.order_base:g} "
                 f"| {pack} "
                 f"| **{line.quantity:g}** "
+                f"| {price} "
                 f"| {notes} |"
             )
         lines.append("")
@@ -211,7 +218,9 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             "_Min is Cin7's MinimumBeforeReorder — a trigger, not a target. The "
             "quantity ordered is the stored ReorderQuantity rounded up to whole "
             "packs, which is what Cin7's own low-stock reorder does; it is not "
-            "sized to close the shortfall._"
+            "sized to close the shortfall. Unit price is the supplier's stored "
+            "cost on the ordered SKU's record in Cin7; — means no cost is "
+            "recorded there and the draft line went out blank._"
         )
         lines.append("")
 

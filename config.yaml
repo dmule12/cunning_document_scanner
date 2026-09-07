@@ -140,9 +140,12 @@ purchase:
   # always ours and cannot be overridden here — they are the entire content of
   # the decision.
   #
-  # Price is deliberately absent. This tool has no view on what a thing should
-  # cost, and a wrong price on a draft is worse than a blank one: blank is
-  # obviously unfinished, wrong is quietly signed off.
+  # Price does not belong here either, but for a different reason: it is not
+  # a constant. Each line's unit price is read from Cin7 itself — the Cost
+  # recorded for the supplier on the ordered SKU's Suppliers tab. Where no
+  # cost is recorded the price is left blank and the line is flagged in the
+  # report, never guessed: blank is obviously unfinished, wrong is quietly
+  # signed off. To fix a blank, record the cost on that product in Cin7.
   line_fields:
     TaxRule: "GST on Expenses"
 
