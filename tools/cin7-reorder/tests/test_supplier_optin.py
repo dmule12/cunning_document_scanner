@@ -67,7 +67,9 @@ def test_a_supplier_with_an_empty_slot_is_not_opted_in():
 def test_pin_matches_an_exact_id():
     from cin7_reorder.pipeline import _matches_pin
 
-    assert _matches_pin("guid-123", "Acme Ltd", {"guid-123"}) is True
+    # Returns the entry that matched, so callers can report pin entries
+    # that matched nobody.
+    assert _matches_pin("guid-123", "Acme Ltd", {"guid-123"}) == "guid-123"
 
 
 def test_pin_matches_a_name_fragment_case_insensitively():
@@ -78,21 +80,24 @@ def test_pin_matches_a_name_fragment_case_insensitively():
     """
     from cin7_reorder.pipeline import _matches_pin
 
-    assert _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"abl"}) is True
-    assert _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"Distribution"}) is True
+    assert _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"abl"}) == "abl"
+    assert (
+        _matches_pin("guid-123", "ABL Distribution Pty Ltd", {"Distribution"})
+        == "Distribution"
+    )
 
 
 def test_pin_does_not_match_an_unrelated_supplier():
     from cin7_reorder.pipeline import _matches_pin
 
-    assert _matches_pin("guid-123", "Acai Supply", {"abl"}) is False
+    assert _matches_pin("guid-123", "Acai Supply", {"abl"}) is None
 
 
 def test_blank_pin_entries_match_nothing():
     """A stray empty string must not silently select every supplier."""
     from cin7_reorder.pipeline import _matches_pin
 
-    assert _matches_pin("guid-123", "Acme Ltd", {"", "   "}) is False
+    assert _matches_pin("guid-123", "Acme Ltd", {"", "   "}) is None
 
 
 def test_a_supplier_with_yes_in_the_slot_is_opted_in():

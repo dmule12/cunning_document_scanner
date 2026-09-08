@@ -230,6 +230,33 @@ def test_explain_says_the_supplier_came_from_the_pack():
     assert "WOULD ORDER" in out
 
 
+def test_a_pin_entry_matching_no_supplier_is_warned_about():
+    """A pin fragment that quietly matches nothing is a supplier someone
+    believes is automated and is not — the exact failure that hid the
+    Somage products, one config typo away from happening again."""
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=200),
+        read_only=True,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        config=Config(
+            suppliers=SupplierConfig(pin=("BioPak", "Mocamaster"))  # typo
+        ),
+        state_path=None,
+        dry_run=True,
+    ).run()
+
+    assert any(
+        "Mocamaster" in w and "matches no supplier" in w
+        for w in result.warnings
+    )
+    assert not any("BioPak" in w for w in result.warnings)
+
+
 def test_no_match_is_an_answer_not_an_error():
     out = explain(["zzz-not-a-product"])
     assert "No product in the catalogue matches" in out
