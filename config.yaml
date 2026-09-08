@@ -40,6 +40,12 @@ suppliers:
     - BioPak
     - Somage
     - Merre
+    # Matched as case-insensitive fragments of the supplier's name in Cin7.
+    # If the report's "Suppliers included" count does not go up after adding
+    # one, the fragment does not match how the supplier record is named —
+    # the run warns about pin entries that match nobody.
+    - Moccamaster
+    - Australian Award Packaging
 
 # ---------------------------------------------------------------------------
 # Locations

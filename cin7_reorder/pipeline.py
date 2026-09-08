@@ -80,13 +80,17 @@ def _is_purchase(payload: object, purchase_id: str) -> bool:
     return returned.strip().lower() == purchase_id.strip().lower()
 
 
-def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> bool:
-    """Whether a supplier is named by the rollout pin.
+def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> Optional[str]:
+    """The pin entry naming this supplier, or ``None``.
 
     Accepts an exact ID or a case-insensitive fragment of the supplier's
     name. Substring matching is deliberate here and nowhere else: the pin
     exists to make "just this one supplier" easy to express, and a GUID is
     not something anyone types correctly from memory.
+
+    Returns the entry rather than a bare boolean so the caller can tell
+    which pin entries matched nobody at all — a fragment that quietly
+    matches nothing is a supplier someone believes is automated and is not.
     """
     lowered_name = name.strip().lower()
     for entry in pin:
@@ -94,10 +98,10 @@ def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> bool:
         if not candidate:
             continue
         if candidate == supplier_id:
-            return True
+            return entry
         if candidate.lower() in lowered_name:
-            return True
-    return False
+            return entry
+    return None
 
 
 @dataclass
@@ -196,6 +200,7 @@ class Pipeline:
         """Supplier id -> name, for suppliers this run may order from."""
         opted_in: dict[str, str] = {}
         pin = set(self.config.suppliers.pin)
+        pin_used: set[str] = set()
 
         for record in self.client.paginate(schema.ENDPOINT_SUPPLIER):
             supplier_id = schema.parse_supplier_id(record)
@@ -211,7 +216,9 @@ class Pipeline:
                 # Matched on ID or on a case-insensitive name fragment,
                 # because supplier IDs are GUIDs nobody can type from memory
                 # and the whole point of the pin is being easy to set safely.
-                if _matches_pin(supplier_id, name, pin):
+                entry = _matches_pin(supplier_id, name, pin)
+                if entry is not None:
+                    pin_used.add(entry)
                     opted_in[supplier_id] = name
                     result.suppliers_considered.append(name)
                 else:
@@ -226,6 +233,20 @@ class Pipeline:
                 result.suppliers_considered.append(name)
             else:
                 result.suppliers_skipped.append(name)
+
+        # A pin entry that matches nobody is a supplier someone believes is
+        # automated and is not — the same silent failure as a location filter
+        # naming no warehouse, and it gets the same treatment: said out loud.
+        for entry in sorted(pin - pin_used):
+            if not entry.strip():
+                continue
+            result.warnings.append(
+                f"Supplier pin entry '{entry}' matches no supplier on this "
+                "account, so it adds nobody to the run. The pin matches an "
+                "exact supplier ID or a case-insensitive fragment of the "
+                "supplier's name — check what the supplier record is actually "
+                "called in Cin7 and adjust the entry in config.yaml."
+            )
 
         return opted_in
 
