@@ -210,6 +210,10 @@ jobs:
               "empty purchase order",
               "empty draft",
               "No suppliers are opted in",
+              # A supplier whose every line tripped a cap gets no purchase
+              # order at all, and somebody has to order it by hand or decide
+              # the cap is wrong. Nothing else in the run says so.
+              "NO PURCHASE ORDER was created",
           )
           for warning in data.get("warnings", []):
               if any(marker in warning for marker in NEEDS_PERSON):

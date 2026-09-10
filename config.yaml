@@ -93,7 +93,14 @@ locations:
 # ---------------------------------------------------------------------------
 safety:
   # Reject any single line above this many units (boxes or base units).
-  max_line_quantity: 500
+  #
+  # 500 was a guess made before anyone had seen a real order. It blocked
+  # green beans, which reorder in lots of 980 — and since that was the only
+  # line for that supplier, no draft was raised for them at all. The
+  # per-product cap below is the more meaningful guard: it scales with each
+  # product's own stored ReorderQuantity instead of assuming every product
+  # in the catalogue moves in similar quantities.
+  max_line_quantity: 1500
 
   # Reject any line more than this multiple of the supplier's own reorder
   # quantity. Set to null to disable.
