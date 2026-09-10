@@ -355,3 +355,61 @@ def test_supplier_not_opted_in_rows_sort_above_the_skip_table_overflow():
 
     markdown = render_markdown(result, dry_run=True)
     assert "ZZZ-CHAI" in markdown
+
+
+def test_a_fractional_bom_ratio_is_a_recipe_not_a_pack():
+    """Live case GBCOLT: a coffee blend's bill of materials says it contains
+    0.368 of a green bean SKU, and that resolved to "order 2661 blends to
+    obtain 980 green beans" — caught only by the safety cap.
+
+    A parent holding less than one of a component is a recipe: buying it
+    gets you a fraction of a unit, so it is not a way to buy the component
+    at all. The component is ordered as itself instead.
+    """
+    from cin7_reorder.bom import BomIndex
+    from cin7_reorder.models import BillOfMaterials, BomComponent
+
+    index = BomIndex.build([
+        BillOfMaterials(
+            parent_product_id="blend",
+            parent_sku="COFSUPER250",
+            components=(BomComponent(component_product_id="gbcolt", quantity=0.368421),),
+        )
+    ])
+
+    assert index.resolve("gbcolt") is None, "a recipe must not become a pack link"
+    assert index.recipe_components["gbcolt"] == ("COFSUPER250",)
+
+
+def test_a_real_pack_still_wins_over_a_recipe_mention():
+    """A component that is both packed and used in a recipe still orders via
+    the pack — the recipe is not a competing option to report."""
+    from cin7_reorder.bom import BomIndex
+    from cin7_reorder.models import BillOfMaterials, BomComponent
+
+    index = BomIndex.build([
+        BillOfMaterials(
+            parent_product_id="box",
+            parent_sku="BOX",
+            components=(BomComponent(component_product_id="sleeve", quantity=20),),
+        ),
+        BillOfMaterials(
+            parent_product_id="blend",
+            parent_sku="BLEND",
+            components=(BomComponent(component_product_id="sleeve", quantity=0.5),),
+        ),
+    ])
+
+    link = index.resolve("sleeve")
+    assert link is not None and link.units_per_pack == 20
+    assert "sleeve" not in index.recipe_components
+
+
+def test_the_report_names_the_suppliers_it_orders_from():
+    """A count alone cannot answer "why 9 and not 8?" — the question anyone
+    asks right after ticking a checkbox in Cin7."""
+    result = RunResult()
+    result.suppliers_considered = ["BioPak", "Cofinet", "Somage Fine Foods"]
+
+    markdown = render_markdown(result, dry_run=True)
+    assert "**Ordering from:** BioPak, Cofinet, Somage Fine Foods." in markdown

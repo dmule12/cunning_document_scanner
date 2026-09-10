@@ -95,6 +95,16 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
     lines.append(f"| API calls | {result.api_calls} |")
     lines.append("")
 
+    # Named, not just counted. This list is the whole scope of what the run
+    # may buy, and it comes from checkboxes in Cin7 that anyone can tick —
+    # so a count alone leaves "why is that 9 and not 8?" unanswerable, which
+    # is exactly the question a person asks when they have just changed one.
+    if result.suppliers_considered:
+        lines.append("**Ordering from:** " + ", ".join(
+            sorted(result.suppliers_considered)
+        ) + ".")
+        lines.append("")
+
     if capped:
         lines.append(
             f"> **{len(capped)} line(s) exceeded a safety cap.** These are usually a "

@@ -375,6 +375,22 @@ class Pipeline:
         # Collected rather than warned one by one: on a real account there are
         # a dozen, and eleven copies of the same paragraph pushed everything
         # else out of view. The explanation belongs in the report once.
+        recipes = index.recipe_components
+        if recipes:
+            named = sorted(
+                (products[base].sku if base in products else base)
+                for base in recipes
+            )
+            result.notes.append(
+                f"{len(named)} product(s) appear in a bill of materials only "
+                "as a FRACTION of something else — a recipe rather than a "
+                "pack, so buying the parent is not a way to buy them. They "
+                "are ordered as themselves: "
+                + ", ".join(named[:15])
+                + ("…" if len(named) > 15 else "")
+                + "."
+            )
+
         for conflict in index.conflicts:
             base = products.get(conflict.base_product_id)
             result.bom_conflicts.append(
