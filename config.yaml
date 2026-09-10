@@ -26,28 +26,26 @@ suppliers:
   truthy_values: ["yes", "true", "y", "1", "on", "enabled"]
 
   # Rollout pin. While this list is non-empty, ONLY these suppliers are
-  # touched, regardless of how the attribute is set in Cin7. `apply` refuses
-  # to run with an empty pin unless --no-pin is passed explicitly.
+  # touched, regardless of how the attribute is set in Cin7 — the pin wins
+  # outright and the checkbox above is not even read. `apply` refuses to run
+  # with an empty pin unless --no-pin is passed explicitly.
   #
-  # Put a single supplier ID here for the first live runs.
+  # EMPTY ON PURPOSE. The pin existed to keep the first live runs to one
+  # supplier while nobody trusted the tool yet. That job is done, and while
+  # it was set, opting a supplier in meant editing this file and pushing —
+  # so the 'Auto Reorder' checkbox, the mechanism built for exactly this,
+  # sat inert. Suppliers are now governed by that checkbox in Cin7, which is
+  # where someone adding a supplier already is.
   #
-  # Set, so that the scheduled run does the same thing as the manual runs this
-  # was checked against. Without it the schedule would fall back to the
-  # attribute in Cin7 and quietly cover a different set of suppliers than
-  # anyone has reviewed output for. Matched on an ID or a case-insensitive
-  # fragment of the supplier name.
-  pin:
-    - BioPak
-    - Somage
-    - Merre
-    # Matched as case-insensitive fragments of the supplier's name in Cin7.
-    # If the report's "Suppliers included" count does not go up after adding
-    # one, the fragment does not match how the supplier record is named —
-    # the run warns about pin entries that match nobody.
-    - Moccamaster
-    - Australian Award Packaging
-    - FPA Australia
-    - Cofinet
+  # These seven were the last pinned set, kept as a record of what the
+  # checkbox has to cover: BioPak, Somage Fine Foods, Merre, Moccamaster
+  # Australia, Australian Award Packaging, FPA Australia, Cofinet.
+  #
+  # To go back to a pin — to isolate one supplier while investigating, say —
+  # list names or IDs here and drop --no-pin from the workflow. Matched on an
+  # ID or a case-insensitive fragment of the name; an entry matching nobody
+  # is reported rather than ignored.
+  pin: []
 
 # ---------------------------------------------------------------------------
 # Locations

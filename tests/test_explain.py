@@ -268,6 +268,34 @@ def test_explain_says_the_supplier_came_from_the_pack():
     assert "WOULD ORDER" in out
 
 
+def test_no_opted_in_suppliers_warns_rather_than_running_quietly():
+    """Now that suppliers come from a checkbox in Cin7 rather than a file in
+    this repo, someone unticking the last one is a live possibility. The
+    workflow fails the job on this warning text, so it has to be produced —
+    otherwise a run that reorders nothing looks exactly like a run with
+    nothing to reorder, indefinitely."""
+    client = Cin7Client(
+        Credentials(account_id="a", app_key="k"),
+        ApiConfig(daily_call_budget=200),
+        read_only=True,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=NullRateLimiter(),
+    )
+    result = Pipeline(
+        client=client,
+        # No pin, and the fixture's suppliers carry no Auto Reorder
+        # attribute — so nobody is opted in.
+        config=Config(
+            suppliers=SupplierConfig(attribute_field="AdditionalAttribute1")
+        ),
+        state_path=None,
+        dry_run=True,
+    ).run()
+
+    assert not result.lines
+    assert any("No suppliers are opted in" in w for w in result.warnings)
+
+
 def test_a_pin_entry_matching_no_supplier_is_warned_about():
     """A pin fragment that quietly matches nothing is a supplier someone
     believes is automated and is not — the exact failure that hid the

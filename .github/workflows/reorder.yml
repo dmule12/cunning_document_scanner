@@ -154,7 +154,12 @@ jobs:
           CIN7_ACCOUNT_ID: ${{ secrets.CIN7_ACCOUNT_ID }}
           CIN7_APP_KEY: ${{ secrets.CIN7_APP_KEY }}
         run: |
+          # --no-pin because suppliers are governed by the 'Auto Reorder'
+          # checkbox in Cin7, so `suppliers.pin` is deliberately empty. The
+          # flag is apply's guard against an EMPTY pin being mistaken for
+          # "every supplier"; passing it says that is genuinely meant.
           python -m cin7_reorder apply \
+            --no-pin \
             --output report.md \
             --json report.json
 
@@ -193,12 +198,18 @@ jobs:
           # live empty-PO incident matched NONE of the old patterns, so the
           # job stayed green while promising to go red — a check that misses
           # its one real case is worse than no check.
+          # "No suppliers are opted in" matters more now that suppliers come
+          # from a checkbox in Cin7 rather than a file in this repo. Someone
+          # unticking the last one, or the attribute slot changing meaning,
+          # would otherwise be a green run that quietly reorders nothing —
+          # for as long as it takes somebody to notice empty shelves.
           NEEDS_PERSON = (
               "Failed to write draft",
               "standing drafts",
               "returned no ID",
               "empty purchase order",
               "empty draft",
+              "No suppliers are opted in",
           )
           for warning in data.get("warnings", []):
               if any(marker in warning for marker in NEEDS_PERSON):
