@@ -30,6 +30,9 @@ _FLAG_LABEL = {
     LineFlag.NO_SUPPLIER_PRICE: (
         "no cost recorded for this supplier in Cin7 — price left blank"
     ),
+    LineFlag.TAX_RULE_FROM_CONFIG: (
+        "no purchase tax rule in Cin7 — used the configured default"
+    ),
 }
 
 _SKIP_LABEL = {
@@ -183,11 +186,12 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
         lines.append("")
         lines.append(
             "| Base SKU | Ordered as | Location | Min | On hand | Alloc | Inbound "
-            "| Position | Short by | Reorder qty | Pack | Qty | Unit price | Notes |"
+            "| Position | Short by | Reorder qty | Pack | Qty | Unit price "
+            "| Tax rule | Notes |"
         )
         lines.append(
             "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
-            "| ---: | ---: | ---: | --- |"
+            "| ---: | ---: | ---: | --- | --- |"
         )
         for line in sorted(
             result.lines, key=lambda ln: (ln.location, ln.base_sku)
@@ -211,6 +215,7 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
                 f"| {pack} "
                 f"| **{line.quantity:g}** "
                 f"| {price} "
+                f"| {line.tax_rule or '(default)'} "
                 f"| {notes} |"
             )
         lines.append("")
@@ -220,7 +225,9 @@ def render_markdown(result: RunResult, *, dry_run: bool) -> str:
             "packs, which is what Cin7's own low-stock reorder does; it is not "
             "sized to close the shortfall. Unit price is the supplier's stored "
             "cost on the ordered SKU's record in Cin7; — means no cost is "
-            "recorded there and the draft line went out blank._"
+            "recorded there and the draft line went out blank. Tax rule is the "
+            "product's own purchase tax rule from Cin7; (default) means Cin7 "
+            "holds none and `purchase.line_fields` in config.yaml was used._"
         )
         lines.append("")
 

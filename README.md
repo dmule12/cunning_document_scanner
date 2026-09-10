@@ -402,6 +402,12 @@ Products with no minimum set — or a minimum of 0, which is Cin7's default — 
 listed. No reorder point means nobody has decided that product should be reordered
 automatically.
 
+**Line tax rules come from the product, not from config.** Each line carries the product's own
+purchase tax rule as recorded in Cin7, inherited from the base SKU when the pack being ordered
+has none. `purchase.line_fields.TaxRule` in config.yaml is only a fallback for products Cin7
+holds no rule for, and those lines are flagged. A tax rule is not constant across a catalogue —
+stamping one value on every line billed a GST-free product GST on Expenses.
+
 **Line prices come from Cin7's stored supplier cost.** Each draft line carries the Cost
 recorded for that supplier on the ordered SKU's Suppliers tab (the pack's record, when a pack
 is ordered). No recorded cost means the price is left blank and the line is flagged in the

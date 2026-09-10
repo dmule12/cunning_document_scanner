@@ -47,6 +47,7 @@ def handler(request: httpx.Request) -> httpx.Response:
                     "Name": "Bond St Chai",
                     "MinimumBeforeReorder": 12,
                     "ReorderQuantity": 24,
+                    "PurchaseTaxRule": "GST Free Expenses",
                     "Suppliers": [
                         {"SupplierID": UNPINNED, "SupplierName": "Somage Fine Foods"}
                     ],
@@ -79,6 +80,9 @@ def handler(request: httpx.Request) -> httpx.Response:
                     "Name": "Cup Art Series 16oz - Sleeve of 50",
                     "MinimumBeforeReorder": 120,
                     "ReorderQuantity": 100,
+                    # The rule is on the sleeve; the BOX is what gets
+                    # ordered and carries none, so the line must inherit it.
+                    "PurchaseTaxRule": "GST Free Expenses",
                 },
                 {
                     "ID": "p-cupbox",
@@ -103,6 +107,7 @@ def handler(request: httpx.Request) -> httpx.Response:
                     "Name": "Lid 90mm",
                     "MinimumBeforeReorder": 10,
                     "ReorderQuantity": 20,
+                    "PurchaseTaxRule": "GST on Expenses",
                     "Suppliers": [
                         {"SupplierID": PINNED, "SupplierName": "BioPak"}
                     ],
@@ -202,6 +207,39 @@ def test_a_line_carries_the_packs_stored_supplier_cost():
     line = next(l for l in result.lines if l.order_sku == "CUPBOX")
     assert line.unit_price == 55.4
     assert LineFlag.NO_SUPPLIER_PRICE not in line.flags
+
+
+def test_a_gst_free_product_is_not_billed_the_configured_gst_rule():
+    """The PO-83178 defect: `line_fields.TaxRule` was stamped onto every
+    line, so a GST-free product went out as 'GST on Expenses'. The product's
+    own rule wins, and it is inherited from the base SKU when the pack
+    actually ordered carries none."""
+    result = _pipeline().run()
+    line = next(l for l in result.lines if l.order_sku == "CUPBOX")
+    assert line.tax_rule == "GST Free Expenses"
+    assert LineFlag.TAX_RULE_FROM_CONFIG not in line.flags
+
+    sent = schema.build_purchase_line(
+        product_id=line.order_product_id,
+        sku=line.order_sku,
+        quantity=line.quantity,
+        tax_rule=line.tax_rule,
+        extra={"TaxRule": "GST on Expenses"},
+    )
+    assert sent["TaxRule"] == "GST Free Expenses", (
+        "the configured fallback must never override the product's own rule"
+    )
+
+
+def test_a_product_with_no_tax_rule_falls_back_and_is_flagged():
+    result = _pipeline().run()
+    line = next(l for l in result.lines if l.order_sku == "LID90")
+    assert line.tax_rule == "GST on Expenses"  # its own, not the fallback
+
+    blank = schema.build_purchase_line(
+        product_id="x", sku="S", quantity=1, extra={"TaxRule": "Configured"}
+    )
+    assert blank["TaxRule"] == "Configured"
 
 
 def test_a_missing_cost_leaves_the_price_blank_and_flags_the_line():
