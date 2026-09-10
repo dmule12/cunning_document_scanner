@@ -374,7 +374,29 @@ at.
 ```
 
 Refuses to run unless `suppliers.pin` in `config.yaml` names at least one supplier. Pass
-`--no-pin` only when you genuinely mean every opted-in supplier.
+`--no-pin` only when you genuinely mean every opted-in supplier — which this account does, so
+the workflow passes it. See below.
+
+### Adding a supplier
+
+**Tick "Auto Reorder" on the supplier record in Cin7.** That is the whole procedure; nothing
+here changes and nothing needs pushing. The next run picks it up.
+
+It works that way because `suppliers.pin` is deliberately empty. The pin overrides the
+checkbox entirely whenever it is set, so while it held a list, adding a supplier meant editing
+this repo — and the checkbox built for the job sat inert. Emptying it hands the decision back
+to Cin7, where whoever is adding the supplier already is.
+
+Two consequences worth holding on to:
+
+- Anyone who can edit a supplier record can opt one in. The draft-only rule is unchanged —
+  nothing is ever authorised or emailed — so the worst case is a draft somebody reads and
+  deletes.
+- Unticking the last box means the run orders from nobody. That would otherwise be a green,
+  silent run that reorders nothing indefinitely, so the workflow fails the job on it.
+
+To verify a supplier took, run `plan` and check the "Suppliers included" count, or run
+`explain` on one of their products.
 
 ---
 
@@ -476,7 +498,10 @@ takes no lines at all rather than taking them and ignoring them.
 ## Safety
 
 - `plan` is read-only, and the HTTP client physically refuses writes in that mode.
-- `apply` requires a supplier pin.
+- `apply` requires either a supplier pin or an explicit `--no-pin`, so an empty pin can never
+  be mistaken for "every supplier".
+- Suppliers are opt-in, never opt-out: a supplier created tomorrow is automated only when
+  somebody deliberately ticks the box.
 - Never authorises, never emails.
 - Per-line and per-run caps mark implausible quantities rather than ordering them.
 - **Never overwrites a human's edit.** Every draft we write is fingerprinted; if it differs
