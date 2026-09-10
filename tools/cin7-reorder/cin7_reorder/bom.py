@@ -59,10 +59,14 @@ class BomIndex:
         conflicts: dict[str, Conflict],
         pack_product_ids: frozenset[str],
         pack_components: dict[str, tuple] | None = None,
+        recipe_components: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self._links = links
         self._conflicts = conflicts
         self._pack_product_ids = pack_product_ids
+        #: base product -> the parents that contain a FRACTION of it. Recipes
+        #: rather than packs, so not a way to buy the component.
+        self._recipe_components = recipe_components or {}
         #: parent -> its full component list, straight off the BOMs. Kept
         #: separately from _links because the two answer different questions:
         #: _links answers "which pack do I ORDER for this component" and
@@ -76,12 +80,29 @@ class BomIndex:
     @classmethod
     def build(cls, boms: Iterable[BillOfMaterials]) -> "BomIndex":
         candidates: dict[str, list[PackLink]] = {}
+        recipes: dict[str, set[str]] = {}
 
         for bom in boms:
             for component in bom.components:
                 if component.quantity <= 0:
                     # Guarded again here as well as in schema.py: a zero ratio
                     # would divide by zero downstream.
+                    continue
+                if component.quantity < 1:
+                    # A parent containing LESS THAN ONE of the component is a
+                    # recipe, not a pack: buying one gets you a fraction of a
+                    # unit. Seen live — a coffee blend whose bill of materials
+                    # says 0.368 of a green bean SKU, which resolved to
+                    # "order 2661 blends to obtain 980 green beans".
+                    #
+                    # Green beans are bought from a green bean supplier, not
+                    # obtained by buying the thing they are roasted into, so
+                    # this is not a purchasing route at all. Excluded from the
+                    # links and reported, leaving the component to be ordered
+                    # as itself.
+                    recipes.setdefault(
+                        component.component_product_id, set()
+                    ).add(bom.parent_sku or bom.parent_product_id)
                     continue
                 candidates.setdefault(component.component_product_id, []).append(
                     PackLink(
@@ -129,6 +150,14 @@ class BomIndex:
             conflicts=conflicts,
             pack_product_ids=pack_ids,
             pack_components=pack_components,
+            recipe_components={
+                base: tuple(sorted(parents))
+                for base, parents in recipes.items()
+                # Only interesting where no real pack exists: a component
+                # with both a pack and a recipe parent orders via the pack,
+                # and saying so would be noise.
+                if base not in links
+            },
         )
 
     # -- queries -----------------------------------------------------------
@@ -184,6 +213,15 @@ class BomIndex:
     @property
     def conflicts(self) -> tuple[Conflict, ...]:
         return tuple(self._conflicts.values())
+
+    @property
+    def recipe_components(self) -> dict[str, tuple[str, ...]]:
+        """Components only ever found as a fraction of something else.
+
+        Reported so that "ordered as base units" on such a product reads as
+        a decision rather than a missing pack link.
+        """
+        return dict(self._recipe_components)
 
     @property
     def link_count(self) -> int:
