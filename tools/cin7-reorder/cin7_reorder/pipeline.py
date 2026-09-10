@@ -1385,12 +1385,34 @@ class Pipeline:
             ]
             held_back = len(lines) - len(writable)
             if held_back:
-                result.warnings.append(
-                    f"{held_back} line(s) for {reference} exceed a safety cap "
-                    "and were NOT put on the draft. They are in the report "
-                    "with their computed quantities; a cap trip usually means "
-                    "a wrong BOM ratio or a stale reorder point."
+                supplier_name = self._all_suppliers.get(supplier_id, supplier_id)
+                capped_skus = ", ".join(
+                    line.base_sku
+                    for line in lines
+                    if LineFlag.CAP_EXCEEDED in line.flags
                 )
+                if writable:
+                    result.warnings.append(
+                        f"{held_back} line(s) for {supplier_name} exceed a "
+                        f"safety cap and were left off the draft "
+                        f"({capped_skus}). The rest of the draft was written "
+                        "as normal. A cap trip usually means a wrong BOM "
+                        "ratio or a stale reorder point."
+                    )
+                else:
+                    # Every line capped means there is NOTHING to write, so no
+                    # draft exists for this supplier at all. Saying lines were
+                    # "not put on the draft" implies one was created and reads
+                    # as a partial order — which is how a blocked supplier got
+                    # mistaken for a supplier the run had missed entirely.
+                    result.warnings.append(
+                        f"NO PURCHASE ORDER was created for {supplier_name}. "
+                        f"Its only line(s) exceeded a safety cap "
+                        f"({capped_skus}), so there was nothing left to put "
+                        "on a draft. Order this by hand, or raise "
+                        "`safety.max_line_quantity` in config.yaml if the "
+                        "quantity is genuinely right."
+                    )
             if not writable:
                 continue
 

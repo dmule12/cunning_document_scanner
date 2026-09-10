@@ -411,7 +411,13 @@ def test_capped_lines_are_reported_not_ordered(tmp_path):
 
     assert result.lines, "the line should still be computed and reported"
     assert not sent, "nothing may be written when every line is capped"
-    assert any("safety cap" in w and "NOT put on the draft" in w for w in result.warnings)
+    # Wording matters here: with every line capped there is no draft at all,
+    # so the warning says that outright rather than describing lines missing
+    # from a draft that was never created.
+    assert any(
+        "safety cap" in w and "NO PURCHASE ORDER was created" in w
+        for w in result.warnings
+    )
 
 
 def test_a_stale_standing_draft_is_reported(tmp_path):
@@ -660,3 +666,38 @@ def test_a_low_product_of_an_unpinned_supplier_is_named_not_silent(tmp_path):
     assert "Chai Bond St" in rows[0].detail
     assert "Old Wholesaler" in rows[0].detail
     assert "default" in rows[0].detail.lower()
+
+
+def test_a_supplier_whose_every_line_is_capped_says_no_po_exists(tmp_path):
+    """The live confusion: Cofinet's only line tripped a cap, so no draft was
+    created — but the warning said lines "were NOT put on the draft", which
+    reads as a partial order. A blocked supplier looked like a missed one.
+
+    When nothing is writable there IS no draft, and the warning has to say
+    so, name the supplier, and name what was blocked.
+    """
+    handler, sent = build(on_hand=0.0)
+    result = run(
+        tmp_path,
+        handler,
+        safety=SafetyConfig(max_line_quantity=1),  # cap everything
+    )
+
+    assert not result.drafts_created, "nothing should have been written"
+    assert not [w for (m, u, w) in sent if u == "purchase"], (
+        "no purchase header should be created when there is nothing to put on it"
+    )
+
+    warning = next(w for w in result.warnings if "NO PURCHASE ORDER" in w)
+    assert "BioPak" in warning, "name the supplier, not an opaque reference"
+    assert "CUP" in warning, "name the product that was blocked"
+    assert "max_line_quantity" in warning, "say how to fix it"
+
+
+def test_a_partially_capped_supplier_still_gets_its_draft(tmp_path):
+    """The other half: capping one line must not read as losing the order."""
+    handler, sent = build(on_hand=0.0)
+    result = run(tmp_path, handler)
+
+    assert result.drafts_created
+    assert not any("NO PURCHASE ORDER" in w for w in result.warnings)
