@@ -328,6 +328,36 @@ def parse_supplier_costs(payload: Mapping[str, Any]) -> dict[str, float]:
     return costs
 
 
+#: Where a product's PURCHASE tax rule sits on its record.
+#:
+#: Deliberately purchase-specific, with no bare ``TaxRule`` fallback. A
+#: product record carries a sale tax rule too, and a generic key could pick
+#: that up and put a SALES rule on a purchase order — confidently wrong in a
+#: way that reaches the accounts. Finding nothing here falls back to the
+#: configured default, which is merely the old behaviour.
+PURCHASE_TAX_RULE_KEYS = (
+    "PurchaseTaxRule",
+    "PurchaseTaxRuleName",
+    "DefaultPurchaseTaxRule",
+    "PurchaseTax",
+)
+
+
+def parse_purchase_tax_rule(payload: Mapping[str, Any]) -> Optional[str]:
+    """The tax rule Cin7 holds for BUYING this product, if any.
+
+    Read per product because it is not a constant: on this account some
+    products are 'GST on Expenses' and others 'GST Free Expenses', and a
+    single configured value stamps the wrong one onto every line that
+    disagrees with it.
+    """
+    rule = as_str(get_first(payload, *PURCHASE_TAX_RULE_KEYS))
+    if rule is None:
+        return None
+    rule = rule.strip()
+    return rule or None
+
+
 # ---------------------------------------------------------------------------
 # Availability
 # ---------------------------------------------------------------------------
@@ -1093,6 +1123,7 @@ def build_purchase_line(
     sku: str,
     quantity: float,
     price: Optional[float] = None,
+    tax_rule: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """One order line.
@@ -1107,6 +1138,12 @@ def build_purchase_line(
     price on a draft is obviously unfinished, a wrong one is quietly signed
     off. ``Total`` is sent consistent with it so the draft reads correctly
     before anyone touches it.
+
+    ``tax_rule`` is the product's own purchase tax rule from Cin7 and wins
+    over any ``TaxRule`` in ``extra``, which is only a fallback for products
+    Cin7 holds no rule for. A rule is not a constant across a catalogue —
+    'GST on Expenses' stamped onto a GST-free product is a wrong number
+    reaching the accounts.
     """
     line = dict(extra or {})
     line.update(
@@ -1119,4 +1156,6 @@ def build_purchase_line(
     if price is not None:
         line["Price"] = price
         line["Total"] = round(price * quantity, 2)
+    if tax_rule:
+        line["TaxRule"] = tax_rule
     return line

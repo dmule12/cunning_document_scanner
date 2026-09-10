@@ -216,6 +216,10 @@ class LineFlag(str, Enum):
     #: entry in Cin7, so the draft line's price was left blank rather than
     #: guessed. Record the cost in Cin7 and the next run fills it in.
     NO_SUPPLIER_PRICE = "no_supplier_price"
+    #: Cin7 holds no purchase tax rule for this product, so the line fell
+    #: back to the configured default. Worth seeing: the default is a guess
+    #: about a product it was never checked against.
+    TAX_RULE_FROM_CONFIG = "tax_rule_from_config"
 
 
 class SkipReason(str, Enum):
@@ -269,6 +273,11 @@ class SuggestedLine:
     #: ``None`` means Cin7 holds no cost for that supplier and the draft line
     #: goes out with the price blank.
     unit_price: Optional[float] = None
+
+    #: The product's own purchase tax rule from Cin7. ``None`` means Cin7
+    #: holds none and the line falls back to `purchase.line_fields` in
+    #: config.yaml.
+    tax_rule: Optional[str] = None
 
     @property
     def is_pack(self) -> bool:

@@ -153,6 +153,11 @@ purchase:
   # cost is recorded the price is left blank and the line is flagged in the
   # report, never guessed: blank is obviously unfinished, wrong is quietly
   # signed off. To fix a blank, record the cost on that product in Cin7.
+  # TaxRule here is only a FALLBACK. Each line carries the product's own
+  # purchase tax rule from Cin7, and this value is used only for products
+  # Cin7 holds no rule for. It is not a constant across a catalogue — some
+  # products are GST free — and stamping one value on every line billed a
+  # GST-free product GST on Expenses on PO-83178.
   line_fields:
     TaxRule: "GST on Expenses"
 

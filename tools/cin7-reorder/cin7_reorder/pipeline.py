@@ -104,6 +104,28 @@ def _matches_pin(supplier_id: str, name: str, pin: set[str]) -> Optional[str]:
     return None
 
 
+@dataclass(frozen=True)
+class Catalogue:
+    """Everything one paged read of the product endpoint yields.
+
+    A single read produces six different things — products, reorder points,
+    bills of materials, supplier costs, tax rules, and raw records for
+    `explain`. They arrive together because Cin7 puts them all on the
+    product record, and naming them here beats returning a tuple that grows
+    a field every time the catalogue turns out to hold something else.
+    """
+
+    products: dict[str, Product]
+    reorder_params: dict[str, list[ReorderParameters]]
+    boms: list[BillOfMaterials]
+    #: Only populated for products `explain` was asked about.
+    raw_records: dict[str, dict]
+    #: product id -> {supplier id -> unit cost}
+    costs: dict[str, dict[str, float]]
+    #: product id -> its own purchase tax rule
+    tax_rules: dict[str, str]
+
+
 @dataclass
 class Pipeline:
     client: Cin7Client
@@ -146,8 +168,22 @@ class Pipeline:
             )
             return
 
-        products, reorder_params, boms, _, costs = self._load_products()
-        bom = self._build_bom_index(boms, products, result)
+        catalogue = self._load_products()
+        products = catalogue.products
+        bom = self._build_bom_index(catalogue.boms, products, result)
+
+        if products and not catalogue.tax_rules:
+            # Either nobody sets a purchase tax rule in Cin7, or the field
+            # names in PURCHASE_TAX_RULE_KEYS are wrong for this account.
+            # Both mean every line falls back to the configured default —
+            # which is how a GST-free product got billed GST on Expenses.
+            result.warnings.append(
+                "No product on this account exposes a purchase tax rule, so "
+                "every line uses `purchase.line_fields` from config.yaml. If "
+                "products do have tax rules set in Cin7, the field name in "
+                "`PURCHASE_TAX_RULE_KEYS` in schema.py is wrong — run `dump "
+                "--sku <a product>` and look for the purchase tax rule key."
+            )
         availability = self._load_availability(result)
         purchases = self._load_purchases(result, suppliers)
 
@@ -180,13 +216,13 @@ class Pipeline:
         self._evaluate_all(
             result=result,
             products=products,
-            reorder_params=reorder_params,
+            reorder_params=catalogue.reorder_params,
             bom=bom,
             availability=availability,
             inbound=inbound,
             suppliers=suppliers,
             locations=locations,
-            costs=costs,
+            catalogue=catalogue,
         )
 
         self._enforce_run_caps(result)
@@ -250,15 +286,7 @@ class Pipeline:
 
         return opted_in
 
-    def _load_products(
-        self, capture_fragments: tuple[str, ...] = ()
-    ) -> tuple[
-        dict[str, Product],
-        dict[str, list[ReorderParameters]],
-        list[BillOfMaterials],
-        dict[str, dict],
-        dict[str, dict[str, float]],
-    ]:
+    def _load_products(self, capture_fragments: tuple[str, ...] = ()) -> "Catalogue":
         """One pass over the catalogue, yielding everything it carries.
 
         Bills of materials live on the product record rather than at their
@@ -277,6 +305,8 @@ class Pipeline:
         captured: dict[str, dict] = {}
         #: product id -> {supplier id -> unit cost}, for pricing draft lines.
         costs: dict[str, dict[str, float]] = {}
+        #: product id -> its own purchase tax rule, where Cin7 holds one.
+        tax_rules: dict[str, str] = {}
 
         # The include flags matter enormously: without them Cin7 returns every
         # nested collection as an empty list, which reads as "no product has a
@@ -298,6 +328,10 @@ class Pipeline:
             if supplier_costs:
                 costs[product.id] = supplier_costs
 
+            tax_rule = schema.parse_purchase_tax_rule(record)
+            if tax_rule:
+                tax_rules[product.id] = tax_rule
+
             parsed = schema.parse_reorder_parameters(record)
             if parsed:
                 params[product.id] = parsed
@@ -307,7 +341,14 @@ class Pipeline:
                 if bom is not None and bom.components:
                     boms.append(bom)
 
-        return products, params, boms, captured, costs
+        return Catalogue(
+            products=products,
+            reorder_params=params,
+            boms=boms,
+            raw_records=captured,
+            costs=costs,
+            tax_rules=tax_rules,
+        )
 
     def _build_bom_index(
         self,
@@ -695,7 +736,7 @@ class Pipeline:
         inbound,
         suppliers: dict[str, str],
         locations: list[str],
-        costs: dict[str, dict[str, float]],
+        catalogue: "Catalogue",
     ) -> None:
         for product in products.values():
             # A pack SKU is not stock in its own right — it disassembles on
@@ -809,31 +850,53 @@ class Pipeline:
                 )
 
                 if line is not None:
-                    result.lines.append(self._price_line(line, costs))
+                    result.lines.append(self._decorate_line(line, catalogue))
                 if skip is not None:
                     result.skipped.append(skip)
 
     @staticmethod
-    def _price_line(
-        line: SuggestedLine, costs: dict[str, dict[str, float]]
+    def _decorate_line(
+        line: SuggestedLine, catalogue: "Catalogue"
     ) -> SuggestedLine:
-        """Attach the supplier's stored cost for the SKU actually ordered.
+        """Attach the per-product facts a purchase order line needs.
 
-        The price is read off the ordered product's Suppliers entry for the
-        supplier being ordered from — the pack's entry when a pack is
-        ordered, because the box is what has a box price. No match means no
-        price and a flag, never a guess: a blank on the draft is obviously
-        unfinished, a wrong number is quietly signed off.
+        Both of these are read from Cin7 rather than configured, because
+        neither is constant across a catalogue and a constant is wrong for
+        every product that disagrees with it:
 
-        Deliberately not part of the draft fingerprint: a cost corrected in
-        Cin7 shows up the next time quantities change, and a price change
-        alone never counts as a human edit to protect.
+        * **Price** — the ordered product's Suppliers entry for the supplier
+          being ordered from; the pack's entry when a pack is ordered,
+          because the box is what has a box price. No cost recorded means a
+          blank price and a flag, never a guess.
+        * **Tax rule** — the ordered product's own purchase tax rule,
+          falling back to the base product's, since the tax treatment
+          belongs to the goods rather than the packaging. Nothing recorded
+          falls back to `purchase.line_fields` in config.yaml, flagged so
+          the fallback is visible.
+
+        Neither is part of the draft fingerprint: a value corrected in Cin7
+        flows on the next time quantities change, and a price or tax-rule
+        change alone never counts as a human edit to protect.
         """
-        cost = costs.get(line.order_product_id, {}).get(line.supplier_id)
-        if cost:
-            return replace(line, unit_price=cost)
+        flags = line.flags
+
+        cost = catalogue.costs.get(line.order_product_id, {}).get(
+            line.supplier_id
+        )
+        if not cost:
+            flags = flags + (LineFlag.NO_SUPPLIER_PRICE,)
+
+        tax_rule = catalogue.tax_rules.get(
+            line.order_product_id
+        ) or catalogue.tax_rules.get(line.base_product_id)
+        if not tax_rule:
+            flags = flags + (LineFlag.TAX_RULE_FROM_CONFIG,)
+
         return replace(
-            line, flags=line.flags + (LineFlag.NO_SUPPLIER_PRICE,)
+            line,
+            unit_price=cost or None,
+            tax_rule=tax_rule,
+            flags=flags,
         )
 
     def _report_not_opted_in(
@@ -915,10 +978,11 @@ class Pipeline:
 
         result = RunResult()
         opted_in = self._load_suppliers(result)
-        products, reorder_params, boms, raw_records, _ = self._load_products(
-            capture_fragments=wanted
-        )
-        bom = BomIndex.build(boms)
+        catalogue = self._load_products(capture_fragments=wanted)
+        products = catalogue.products
+        reorder_params = catalogue.reorder_params
+        raw_records = catalogue.raw_records
+        bom = BomIndex.build(catalogue.boms)
         availability = self._load_availability(result)
         purchases = self._load_purchases(result, opted_in)
         our_drafts = {p.id: p for p in purchases if p.is_draft and is_ours(p)}
@@ -995,6 +1059,16 @@ class Pipeline:
             f"=== {product.sku} — {product.name or '(no name)'}",
             f"    product id {product.id}",
         ]
+
+        rule = schema.parse_purchase_tax_rule(raw)
+        out.append(
+            f"    Purchase tax rule in Cin7: {rule}"
+            if rule
+            else (
+                "    Purchase tax rule in Cin7: none the API exposes — a "
+                "line for this product falls back to the configured default."
+            )
+        )
 
         listed = schema.parse_product_suppliers(raw)
         effective = self._order_supplier(product, bom, products)
@@ -1343,6 +1417,7 @@ class Pipeline:
                     sku=line.order_sku,
                     quantity=line.quantity,
                     price=line.unit_price,
+                    tax_rule=line.tax_rule,
                     extra=self.config.purchase.line_fields,
                 )
                 for line in lines
