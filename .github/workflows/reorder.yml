@@ -214,6 +214,10 @@ jobs:
               # order at all, and somebody has to order it by hand or decide
               # the cap is wrong. Nothing else in the run says so.
               "NO PURCHASE ORDER was created",
+              # A circular bill of materials removes every product in the
+              # loop from the run entirely — no line, no skip row. It hid
+              # both napkin SKUs for months. Nothing else would say so.
+              "CIRCULAR BILL OF MATERIALS",
           )
           for warning in data.get("warnings", []):
               if any(marker in warning for marker in NEEDS_PERSON):

@@ -413,3 +413,67 @@ def test_the_report_names_the_suppliers_it_orders_from():
 
     markdown = render_markdown(result, dry_run=True)
     assert "**Ordering from:** BioPak, Cofinet, Somage Fine Foods." in markdown
+
+
+def _cyclic_bom():
+    from cin7_reorder.models import BillOfMaterials, BomComponent
+
+    return [
+        BillOfMaterials(
+            parent_product_id="box",
+            parent_sku="Box of 2000",
+            components=(BomComponent(component_product_id="pack", quantity=20),),
+        ),
+        BillOfMaterials(
+            parent_product_id="pack",
+            parent_sku="Pack of 100",
+            components=(BomComponent(component_product_id="box", quantity=20),),
+        ),
+    ]
+
+
+def test_a_circular_bom_is_detected():
+    """Live case 'Napkins Plain': the Box of 2000 correctly lists 20 x Pack
+    of 100, and the Pack of 100 lists 20 x Box of 2000 — backwards. Both
+    then count as packs, packs are never evaluated against their own stock,
+    and so BOTH products vanished from every run with no line, no skip row
+    and no warning. Napkins were missing for months because of it."""
+    from cin7_reorder.bom import BomIndex
+
+    index = BomIndex.build(_cyclic_bom())
+
+    assert index.is_pack("box") and index.is_pack("pack"), (
+        "both still read as packs — that is the invisibility this reports"
+    )
+    assert index.cycles == (("box", "pack"),)
+
+
+def test_a_cycle_is_reported_from_its_smallest_id():
+    """The same loop must read the same way every run, whichever product the
+    walk happened to start from."""
+    from cin7_reorder.bom import BomIndex
+    from cin7_reorder.models import BillOfMaterials, BomComponent
+
+    three = [
+        BillOfMaterials(
+            parent_product_id=a,
+            components=(BomComponent(component_product_id=b, quantity=2),),
+        )
+        for a, b in (("c", "a"), ("a", "b"), ("b", "c"))
+    ]
+    assert BomIndex.build(three).cycles == (("a", "b", "c"),)
+
+
+def test_a_healthy_bom_has_no_cycle():
+    from cin7_reorder.bom import BomIndex
+    from cin7_reorder.models import BillOfMaterials, BomComponent
+
+    index = BomIndex.build([
+        BillOfMaterials(
+            parent_product_id="box",
+            parent_sku="BOX",
+            components=(BomComponent(component_product_id="sleeve", quantity=20),),
+        )
+    ])
+    assert index.cycles == ()
+    assert index.resolve("sleeve").units_per_pack == 20
