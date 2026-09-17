@@ -375,6 +375,28 @@ class Pipeline:
         # Collected rather than warned one by one: on a real account there are
         # a dozen, and eleven copies of the same paragraph pushed everything
         # else out of view. The explanation belongs in the report once.
+        for cycle in index.cycles:
+            # The most expensive kind of BOM mistake, because it produces no
+            # order line AND no skip row: every product in a cycle counts as
+            # a pack, packs are never evaluated against their own stock, so
+            # the whole group drops out of the run in silence. Live, that hid
+            # both napkin SKUs for months while somebody kept asking why
+            # napkins never appeared on an order.
+            named = " -> ".join(
+                (products[pid].sku if pid in products else pid) for pid in cycle
+            )
+            result.warnings.append(
+                "CIRCULAR BILL OF MATERIALS: "
+                f"{named} -> (back to the start). These products list each "
+                "other as components, which cannot be true — one of the "
+                "bills of materials is entered backwards. Every product in "
+                "the loop counts as a pack, and packs are never reordered "
+                "against their own stock, so NONE of them can be ordered "
+                "automatically until this is fixed. In Cin7, remove the bill "
+                "of materials from whichever of these is the smaller unit: "
+                "only the larger pack should list what it breaks down into."
+            )
+
         recipes = index.recipe_components
         if recipes:
             named = sorted(
@@ -1165,6 +1187,27 @@ class Pipeline:
                 )
 
         if bom.is_pack(product.id):
+            in_cycle = next(
+                (c for c in bom.cycles if product.id in c), None
+            )
+            if in_cycle is not None:
+                named = " -> ".join(
+                    (products[pid].sku if pid in products else pid)
+                    for pid in in_cycle
+                )
+                out.append(
+                    "    CIRCULAR BILL OF MATERIALS: "
+                    f"{named} -> (back to the start). These products list "
+                    "each other as components, which cannot be true — one "
+                    "bill of materials is entered backwards. Every product "
+                    "in the loop counts as a pack, and packs are never "
+                    "reordered against their own stock, so NONE of them can "
+                    "be ordered automatically. This product is invisible to "
+                    "the run until it is fixed. In Cin7, remove the bill of "
+                    "materials from whichever is the smaller unit: only the "
+                    "larger pack should list what it breaks down into."
+                )
+                return out
             parts = []
             for component_id, qty in bom.components_in_base(product.id, 1.0):
                 component = products.get(component_id)

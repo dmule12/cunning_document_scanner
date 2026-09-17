@@ -60,6 +60,7 @@ class BomIndex:
         pack_product_ids: frozenset[str],
         pack_components: dict[str, tuple] | None = None,
         recipe_components: dict[str, tuple[str, ...]] | None = None,
+        cycles: tuple[tuple[str, ...], ...] = (),
     ) -> None:
         self._links = links
         self._conflicts = conflicts
@@ -67,6 +68,9 @@ class BomIndex:
         #: base product -> the parents that contain a FRACTION of it. Recipes
         #: rather than packs, so not a way to buy the component.
         self._recipe_components = recipe_components or {}
+        #: Groups of products that contain each other, directly or through a
+        #: chain. See :meth:`cycles`.
+        self._cycles = cycles
         #: parent -> its full component list, straight off the BOMs. Kept
         #: separately from _links because the two answer different questions:
         #: _links answers "which pack do I ORDER for this component" and
@@ -150,6 +154,7 @@ class BomIndex:
             conflicts=conflicts,
             pack_product_ids=pack_ids,
             pack_components=pack_components,
+            cycles=_find_cycles(pack_components),
             recipe_components={
                 base: tuple(sorted(parents))
                 for base, parents in recipes.items()
@@ -215,6 +220,24 @@ class BomIndex:
         return tuple(self._conflicts.values())
 
     @property
+    def cycles(self) -> tuple[tuple[str, ...], ...]:
+        """Products whose bills of materials contain each other.
+
+        Confirmed live on 'Napkins Plain': the Box of 2000 lists 20 x Pack of
+        100, correctly, and the Pack of 100 lists 20 x Box of 2000 — entered
+        backwards. Both records therefore claim to be a pack, packs are never
+        evaluated against their own stock, and so BOTH napkin products became
+        invisible to the run. No order line, no skip row, nothing in the
+        report: the tool simply never considered them, for months.
+
+        Which way round the relationship really goes is not something to
+        guess — that is the same "wrong quantity of the wrong product
+        arriving" risk a conflict carries — so these are reported and left
+        for somebody to fix in Cin7.
+        """
+        return self._cycles
+
+    @property
     def recipe_components(self) -> dict[str, tuple[str, ...]]:
         """Components only ever found as a fraction of something else.
 
@@ -229,3 +252,47 @@ class BomIndex:
 
     def __len__(self) -> int:
         return len(self._links)
+
+
+def _find_cycles(
+    pack_components: dict[str, tuple],
+) -> tuple[tuple[str, ...], ...]:
+    """Products that contain each other, directly or through a chain.
+
+    A bill of materials describes "this is made of that", so it cannot
+    legitimately come back to where it started: a pack of 100 cannot contain
+    boxes of 2000 that contain packs of 100. A cycle is always a data entry
+    mistake, and an expensive one to leave alone, because every product in it
+    counts as a pack and packs are never evaluated for reordering. The
+    products vanish from the run rather than being reported.
+
+    Plain depth-first search over the parent -> component graph, returning
+    each cycle once, ordered from its smallest id so the same cycle reads the
+    same way from run to run.
+    """
+    found: set[tuple[str, ...]] = set()
+    visited: set[str] = set()
+
+    def walk(node: str, path: list[str], on_path: set[str]) -> None:
+        if node in on_path:
+            cycle = path[path.index(node):]
+            # Rotate to start at the smallest id: the same cycle is otherwise
+            # reported differently depending on which product we happened to
+            # start walking from.
+            pivot = cycle.index(min(cycle))
+            found.add(tuple(cycle[pivot:] + cycle[:pivot]))
+            return
+        if node in visited:
+            return
+        visited.add(node)
+        on_path.add(node)
+        path.append(node)
+        for component in pack_components.get(node, ()):
+            walk(component.component_product_id, path, on_path)
+        path.pop()
+        on_path.discard(node)
+
+    for parent in pack_components:
+        walk(parent, [], set())
+
+    return tuple(sorted(found))
