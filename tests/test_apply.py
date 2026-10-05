@@ -32,7 +32,12 @@ SUPPLIER = "sup-1"
 NEW_ID = "created-po-1"
 
 
-def build(*, order_verb_fails: str = "", existing_draft: dict | None = None):
+def build(
+    *,
+    order_verb_fails: str = "",
+    existing_draft: dict | None = None,
+    supplier_fields: dict | None = None,
+):
     """A Cin7 that records every write. ``order_verb_fails`` rejects PUT or POST."""
     sent: list[tuple[str, str, dict]] = []
 
@@ -56,7 +61,14 @@ def build(*, order_verb_fails: str = "", existing_draft: dict | None = None):
         if tail == "supplier":
             return page1(
                 "SupplierList",
-                [{"ID": SUPPLIER, "Name": "BioPak", "AdditionalAttribute1": "Yes"}],
+                [
+                    {
+                        "ID": SUPPLIER,
+                        "Name": "BioPak",
+                        "AdditionalAttribute1": "Yes",
+                        **(supplier_fields or {}),
+                    }
+                ],
             )
 
         if tail == "product":
@@ -102,7 +114,7 @@ def build(*, order_verb_fails: str = "", existing_draft: dict | None = None):
     return handler, sent
 
 
-def run(tmp_path, handler, state_path=None):
+def run(tmp_path, handler, state_path=None, extra_fields=None):
     client = Cin7Client(
         Credentials(account_id="a", app_key="k"),
         ApiConfig(daily_call_budget=200),
@@ -115,7 +127,7 @@ def run(tmp_path, handler, state_path=None):
         config=Config(
             suppliers=SupplierConfig(attribute_field="AdditionalAttribute1"),
             purchase=PurchaseConfig(
-                extra_fields={"TaxRule": "GST on Expenses"},
+                extra_fields=extra_fields or {"TaxRule": "GST on Expenses"},
                 line_fields={"TaxRule": "GST on Expenses"},
             ),
         ),
@@ -201,3 +213,35 @@ def test_put_is_still_tried_when_post_is_refused(tmp_path):
     verbs = [verb for verb, _body in writes(sent, "purchase/order")]
     assert verbs == ["POST", "PUT"]
     assert result.drafts_created, result.warnings
+
+
+def test_the_draft_carries_its_own_suppliers_payment_term(tmp_path):
+    """The bug: Somage's 21-day invoices came due at the end of next month.
+
+    Cin7 dates the invoice off the purchase order's term, and every draft
+    carried the configured '30 Days EOM' whatever the supplier had agreed.
+    """
+    handler, sent = build(supplier_fields={"PaymentTerm": "21 Days"})
+    result = run(
+        tmp_path,
+        handler,
+        extra_fields={"TaxRule": "GST on Expenses", "Terms": "30 Days EOM"},
+    )
+
+    assert result.drafts_created, result.warnings
+    _verb, header = writes(sent, "purchase")[0]
+    assert header["Terms"] == "21 Days"
+    assert not any("payment term" in w for w in result.warnings)
+
+
+def test_a_supplier_with_no_term_is_said_out_loud(tmp_path):
+    """Nobody chose Cin7's default for this supplier, so the run says so."""
+    handler, sent = build()
+    result = run(tmp_path, handler)
+
+    assert result.drafts_created, result.warnings
+    _verb, header = writes(sent, "purchase")[0]
+    assert "Terms" not in header
+    assert any(
+        "BioPak has no payment term" in w for w in result.warnings
+    ), result.warnings

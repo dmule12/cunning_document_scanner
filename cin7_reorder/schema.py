@@ -488,6 +488,21 @@ def parse_supplier_name(payload: Mapping[str, Any]) -> Optional[str]:
     return as_str(get_first(payload, "Name", "SupplierName"))
 
 
+def parse_supplier_payment_term(payload: Mapping[str, Any]) -> Optional[str]:
+    """The payment term set on the supplier's card in Cin7, if any.
+
+    Read per supplier because it is not a constant: Somage invoices on 21
+    days, others on 30 days EOM. Cin7 works an invoice's due date out from
+    the purchase order's term, so one configured value put every supplier's
+    bills on the same due date whatever they had agreed.
+    """
+    term = as_str(get_first(payload, "PaymentTerm", "Terms"))
+    if term is None:
+        return None
+    term = term.strip()
+    return term or None
+
+
 def extract_supplier_attribute(
     payload: Mapping[str, Any], attribute_name: str
 ) -> Any:
@@ -1050,6 +1065,7 @@ def build_purchase_payload(
     reference: str,
     fingerprint: Optional[str] = None,
     order_date: Optional[str] = None,
+    terms: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``POST /purchase`` body — the header only.
@@ -1065,9 +1081,14 @@ def build_purchase_payload(
     purchase from the account, which is a better source than guessing: the
     fields an existing order carries are the fields this account needs.
 
-    ``extra`` is merged in last, so anything else the account turns out to
+    ``extra`` is merged in, so anything else the account turns out to
     demand can be added from `purchase.extra_fields` in config.yaml without a
     code change.
+
+    ``terms`` is the supplier's own payment term from Cin7 and wins over any
+    ``Terms`` in ``extra``, which is only a fallback for suppliers Cin7 holds
+    no term for. Cin7 dates the invoice off this field, so a configured
+    '30 Days EOM' put a 21-day supplier's bills due weeks late.
     """
     payload: dict[str, Any] = {
         "SupplierID": supplier_id,
@@ -1088,6 +1109,8 @@ def build_purchase_payload(
             if key == "Order":
                 continue
             payload[key] = value
+    if terms:
+        payload["Terms"] = terms
     return payload
 
 

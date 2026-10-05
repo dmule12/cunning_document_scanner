@@ -138,6 +138,11 @@ class Pipeline:
     #: "this product points at a supplier id that does not exist".
     _all_suppliers: dict = field(default_factory=dict, init=False, repr=False)
 
+    #: Supplier id -> the payment term on its Cin7 card, filled by
+    #: _load_suppliers. Each draft carries its own supplier's term, because
+    #: Cin7 dates the invoice off the purchase order and suppliers differ.
+    _supplier_terms: dict = field(default_factory=dict, init=False, repr=False)
+
     #: Whether to try the Advanced/Service purchase endpoint before
     #: ``/purchase``. Set by whichever one last served a purchase. Purely an
     #: optimisation — both are still tried — but on an account where every
@@ -244,6 +249,9 @@ class Pipeline:
                 continue
             name = schema.parse_supplier_name(record) or supplier_id
             self._all_suppliers[supplier_id] = name
+            terms = schema.parse_supplier_payment_term(record)
+            if terms:
+                self._supplier_terms[supplier_id] = terms
 
             if pin:
                 # The rollout pin overrides the attribute entirely, so the
@@ -1483,12 +1491,14 @@ class Pipeline:
                 continue
 
             lines = writable
+            terms = self._supplier_terms.get(supplier_id)
             payload = schema.build_purchase_payload(
                 supplier_id=supplier_id,
                 location=location,
                 reference=reference,
                 fingerprint=written,
                 order_date=f"{date.today().isoformat()}T00:00:00",
+                terms=terms,
                 extra=self.config.purchase.extra_fields,
             )
 
@@ -1545,6 +1555,18 @@ class Pipeline:
                     result.drafts_updated.append(plan.reference)
                 else:
                     result.drafts_created.append(plan.reference)
+                    if not terms:
+                        # Not a failure — Cin7 applies a default — but nobody
+                        # chose that default for this supplier, and it is
+                        # what the invoice's due date will be worked out from.
+                        result.warnings.append(
+                            f"{self._all_suppliers.get(supplier_id, supplier_id)} "
+                            "has no payment term on its Cin7 card, so draft "
+                            f"{reference} was created without this supplier's "
+                            "term. Check the payment term on the draft, and "
+                            "set it on the supplier in Cin7 so the next one "
+                            "carries it."
+                        )
             except Cin7Error as exc:
                 if purchase_id and not updating:
                     # The header exists but the lines never landed: there is

@@ -142,10 +142,15 @@ purchase:
   # These values are read off purchase order PO-81146, which Cin7 accepted.
   # Comment one out if it turns out not to be required — every field here is a
   # value this tool asserts rather than lets Cin7 decide.
+  #
+  # No `Terms` here. Each purchase order takes its payment term from its own
+  # supplier's card in Cin7, and Cin7 works the invoice's due date out from
+  # it. A fixed "30 Days EOM" (read off PO-81146) put Somage's 21-day bills
+  # due at the end of the following month. A `Terms` added here is used only
+  # for a supplier with no term set in Cin7.
   extra_fields:
     TaxRule: "GST on Expenses"
     TaxCalculation: "Exclusive"
-    Terms: "30 Days EOM"
     InventoryAccount: "11500"
     BlindReceipt: false
 

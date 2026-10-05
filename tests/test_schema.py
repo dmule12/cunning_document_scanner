@@ -572,6 +572,37 @@ def test_line_fields_cannot_override_the_decision():
     assert line["TaxRule"] == "GST on Expenses"
 
 
+def test_the_suppliers_term_wins_over_a_configured_one():
+    """A configured `Terms` is a fallback, never an override.
+
+    Cin7 dates the invoice off this field: '30 Days EOM' on a supplier who
+    invoices on 21 days puts the bill due weeks after it is owed.
+    """
+    payload = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        terms="21 Days",
+        extra={"Terms": "30 Days EOM"},
+    )
+    assert payload["Terms"] == "21 Days"
+
+    fallback = schema.build_purchase_payload(
+        supplier_id="s1",
+        location="WA",
+        reference="AUTO-1",
+        extra={"Terms": "30 Days EOM"},
+    )
+    assert fallback["Terms"] == "30 Days EOM"
+
+
+def test_a_blank_supplier_term_reads_as_none():
+    """An unset field comes back as an empty string, not a term."""
+    assert schema.parse_supplier_payment_term({"PaymentTerm": "21 Days"}) == "21 Days"
+    assert schema.parse_supplier_payment_term({"PaymentTerm": "  "}) is None
+    assert schema.parse_supplier_payment_term({}) is None
+
+
 def test_extra_fields_are_merged_in():
     """Whatever else this account demands, without a code change."""
     payload = schema.build_purchase_payload(
