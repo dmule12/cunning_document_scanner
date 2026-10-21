@@ -1,0 +1,20 @@
+{
+  "719491": {
+    "title": "50mm dia labels",
+    "dated": "2026-10-14",
+    "labels_per_roll": 250,
+    "freight": 28.00,
+    "pricing_basis": "total labels in one order across all variants on this quote; min 1 roll per variant and 1,000 labels per order",
+    "tiers": [
+      {"rolls": 4,   "price_per_roll": 125.00, "total": 500.00},
+      {"rolls": 8,   "price_per_roll": 62.50,  "total": 500.00},
+      {"rolls": 24,  "price_per_roll": 20.90,  "total": 501.60},
+      {"rolls": 40,  "price_per_roll": 15.80,  "total": 632.00},
+      {"rolls": 60,  "price_per_roll": 13.25,  "total": 795.00},
+      {"rolls": 80,  "price_per_roll": 11.98,  "total": 958.40},
+      {"rolls": 120, "price_per_roll": 11.10,  "total": 1332.00},
+      {"rolls": 160, "price_per_roll": 10.50,  "total": 1680.00},
+      {"rolls": 200, "price_per_roll": 10.20,  "total": 2040.00}
+    ]
+  }
+}

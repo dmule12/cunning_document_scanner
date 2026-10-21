@@ -1,0 +1,58 @@
+cohesion_code,description,size,quote,cin7_sku,match,include
+220075,50mm dia labels - Supernatural,50 diameter,719491,9782701,confirmed by David (Brand Labels Supernatural (Black) - Roll of 250),yes
+220076,50mm dia labels - Vegan,50 diameter,719491,20555886,name match,yes
+220077,50mm dia labels - Gluten Free,50 diameter,719491,9782719,name match,yes
+220078,50mm dia labels - Dairy Free,50 diameter,719491,14035789,name match,yes
+220079,50mm dia labels - Vegetarian,50 diameter,719491,20388485,name match,yes
+221349,50mm dia labels - Nut Free,50 diameter,719491,,not found in Cin7 (14035775 Contains Nuts is an Admiral Printing label),no
+222930,50mm dia labels - Casista,50 diameter,719491,,not found in Cin7,no
+220327,Food Hall Made Fresh labels (Blue Arches),20x350,719607,,not matched (possibly 9105427 Made Fresh In Store Long),no
+224053,Food Hall Made Fresh labels (Plants),20x350,719607,,not matched,no
+220403,Made Fresh In Store labels,65x25,719700,,not matched (possibly 7873655 Made Fresh In Store Short),no
+220913,App sticker - Bermuda,40 diameter,719925,13424292,name match but Cin7 supplier is Fast Printing,no
+220914,App sticker - Supernatural,40 diameter,719925,13424325,name match but Cin7 supplier is Fast Printing,no
+221346,App stickers - Courtside,40 diameter,719925,13424313,name match,yes
+221347,Logo sticker - Bermuda,40 diameter,719925,9782696,likely (Brand Labels Bermuda),yes
+221348,Logo sticker - Super Natural,40 diameter,719925,,not matched,no
+221007,Aroma labels,70x25,719963,9782695,likely (Brand Labels Aroma Cafe Red Rectangle Logo),yes
+221411,Bowl labels - Salmon Poke,70x230,720116,LBLBSP,name match,yes
+221412,Bowl labels - Miso Salmon Rice,70x230,720116,LBLBMSP,likely (Cin7 name says Miso Salmon Poke),yes
+221413,Bowl labels - Miso Salmon Noodle,70x230,720116,LBLMSN,name match,yes
+221414,Bowl labels - Teriyaki Chicken Noodle,70x230,720116,LBLTCN,name match,yes
+221415,Bowl labels - Pulled Beef Rice,70x230,720116,LBLPBR,name match,yes
+221416,Bowl labels - Vegan Nourish,70x230,720116,LBLBVN,name match,yes
+221417,Wrap labels - Middle Eastern,70x230,720116,LBLWME,name match,yes
+221418,Wrap labels - Chicken Avocado,70x230,720116,LBLWCA,name match,yes
+221419,Wrap labels - Pesto Chicken,70x230,720116,LBLWPC,name match,yes
+221420,"Pots labels - Yoghurt, M Berries & Almond Granola",57x193,720117,LBLYBG,name match,yes
+221421,Pots labels - Bircher Muesli,57x193,720117,LBLPBM,name match,yes
+221422,Pots labels - Chocolate Chia Pudding,57x193,720117,LBLPCCP,name match,yes
+221423,Pots labels - Mango Chia Pudding,57x193,720117,LBLMCP,name match,yes
+221424,Pots labels - Raspberry Chia Pudding,57x193,720117,LBLPMCP,name match,yes
+221425,Pots labels - Mango Yoghurt Cup,57x193,720117,LBLPMYC,name match,yes
+221426,Pots labels - Yoghurt & Almond Granola,57x193,720117,LBLPYG,name match,yes
+221427,Pots labels - Yoghurt w Mixed Berries,57x193,720117,LBLPYMB,name match,yes
+221428,Salad labels - Chicken Pesto Pasta,72x237,720118,LBLCPP,name match,yes
+221429,Salad labels - Cuban Brown Rice,72x237,720118,LBLCBR,name match,yes
+221430,Salad labels - Superfood,72x237,720118,LBLSF,name match,yes
+221431,Salad labels - South Western Chicken Pasta,72x237,720118,LBLSWCP,name match,yes
+221432,Salad labels - Mexican Corn & Bean,72x237,720118,LBLMCB,name match,yes
+221433,Salad labels - Chicken Hokkien,72x237,720118,LBLC3,name match,yes
+221434,Sandwich labels - Egg,70x315,720119,LBLSE,name match,yes
+221435,Sandwich labels - Roast Chicken,70x315,720119,LBLSRC,name match,yes
+221436,Sandwich labels - Cheese & Salad,70x315,720119,LBLSCS,name match,yes
+221437,"Sushi labels - Tuna, Mayo & Cucumber",72x180,720120,LBLSTMC,name match,yes
+221438,Sushi labels - Teriyaki Chicken,72x180,720120,LBLSTY,name match,yes
+221439,Sushi labels - Katsu Chicken & Cucumber,72x180,720120,LBLSKCC,name match,yes
+221440,Sushi labels - Crispy Prawn,72x180,720120,LBLSCP,name match,yes
+221441,Sushi labels - Fresh Salmon & Avocado,72x180,720120,LBLSFSA,name match,yes
+221442,Sushi labels - Mixed,72x180,720120,LBLSM,name match,yes
+222625,Casista Buzzer stickers,57 diameter,721013,,not found in Cin7,no
+224964,Food Hall Buzzer stickers,57x57,721013,,not found in Cin7,no
+225445,300mL Can labels - Iced Coffee,145x32,721841,LBLCANIC,name match,yes
+225446,300mL Can labels - Mango Yoghurt,145x32,721841,LBLCANMY,name match,yes
+225447,"300mL Can labels - Yoghurt, Berries & Almond Granola",145x32,721841,LBLCANYBG,name match,yes
+225448,300mL Can labels - Mango Chia Pudding,145x32,721841,LBLCANMCP,name match,yes
+225449,300mL Can labels - Raspberry Chia Pudding,145x32,721841,LBLCANRCP,name match,yes
+225450,300mL Can labels - Iced Strawberry Matcha,145x32,721841,LBLCANISM,name match,yes
+225451,300mL Can labels - Iced Chocolate,145x32,721841,LBLCANICH,name match,yes
